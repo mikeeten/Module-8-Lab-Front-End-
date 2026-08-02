@@ -1,5 +1,19 @@
 <h2>Available Courses</h2>
-<tms-course-card
-  [course]="sampleCourse"
-  (enrollClicked)="handleEnroll($event)"
-/>
+
+<!-- Empty state -->
+<div *ngIf="courses.length === 0">
+  <p>No courses available at the moment.</p>
+</div>
+
+<!-- Loop through courses -->
+<div *ngFor="let c of courses">
+  <tms-course-card
+    [course]="c"
+    (enrollClicked)="handleEnroll($event)"
+  />
+</div>
+
+<!-- Show selected course -->
+<div *ngIf="selectedCourse()">
+  <h3>You selected: {{ selectedCourse()?.title }}</h3>
+</div>
