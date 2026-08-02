@@ -1,8 +1,5 @@
-<div class="dashboard">
-  <h1>Welcome, {{ studentName() }}</h1>
-  <p>Credits Earned: {{ earnedCredits() }}</p>
-  <p>Graduation Status: {{ graduationStatus() }}</p>
-  <button (click)="registerForClass()">
-    Register for a Class (+3 credits)
-  </button>
-</div>
+<h2>Available Courses</h2>
+<tms-course-card
+  [course]="sampleCourse"
+  (enrollClicked)="handleEnroll($event)"
+/>
