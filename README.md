@@ -1,160 +1,120 @@
-### Exercise 1: Setting Up the Project and Your First Signals
+### Exercise 2: Breaking the Monolith: Component Communication
 
-**Context:** Liya is a student at CoTBE. She opens the TMS in her browser expecting to see her dashboard: her name, how many credits she has earned, and whether she is eligible for graduation. Right now, there is nothing. You are going to build that dashboard using Angular's reactive **Signals** architecture.
+**Context:** Your dashboard should not contain 500 lines of HTML for every feature. You need a modular `CourseCardComponent` that knows how to display exactly one course and securely notify the parent component whenever a user executes an enrollment command.
 
 > [!NOTE]
-> **Step 1: Create the Angular Project**
+> **Step 1: Generate the Card Component**
 > 
-> Open a terminal, navigate to your workspace directory, and initialize a modern standalone Angular application:
+> Execute the Angular CLI schematic tool to scaffold a reusable UI component:
 > ```bash
-> ng new tms-client --style=scss --ssr=false --standalone --routing
-> ```
-> 
-> **Angular CLI Architecture Configuration Flags Explained:**
-> * `tms-client`: The name of the project folder containing our Training Management System frontend.
-> * `--style=scss`: Configures the preprocessor format to SCSS so you can leverage nested rules and cleaner design variables.
-> * `--ssr=false`: Disables Server-Side Rendering. TMS is a login-protected dashboard that does not require public SEO indexing, reducing operational complexity.
-> * `--standalone`: Eliminates the legacy `NgModule` system (`app.module.ts`) in favor of tree-shakable standalone components.
-> * `--routing`: Scaffold an explicit routing configuration file to manage client-side state transfers between workspace screens.
-> 
-> Once compilation completes, enter the workspace and launch your editor:
-> ```bash
-> cd tms-client
-> code .
+> ng generate component ui/course-card
 > ```
 
 > [!NOTE]
-> **Step 2: Configure the Application Shell**
+> **Step 2: Define the Component Contract**
 > 
-> Open `src/app/app.config.ts`. Replace the boilerplate text with this unified bootstrapper to initialize zoneless change detection and global injection providers:
-> 
+> Open `src/app/ui/course-card/course-card.component.ts`. Establish your inputs and outputs using modern Signal-based API contracts:
 > ```typescript
-> import { ApplicationConfig, provideZonelessChangeDetection } from "@angular/core";
-> import { provideRouter, withComponentInputBinding } from "@angular/router";
-> import { provideHttpClient } from "@angular/common/http";
-> import { routes } from "./app.routes";
+> import { Component, input, output } from "@angular/core";
+> import { Course } from "../../models/course.model";
 > 
-> export const appConfig: ApplicationConfig = {
->   providers: [
->     provideZonelessChangeDetection(),
->     provideRouter(routes, withComponentInputBinding()),
->     provideHttpClient(),
->   ],
-> };
+> @Component({
+>   selector: "tms-course-card",
+>   standalone: true,
+>   imports: [],
+>   templateUrl: "./course-card.component.html",
+>   styleUrl: "./course-card.component.scss",
+> })
+> export class CourseCardComponent {
+>   course = input.required<Course>();
+>   enrollClicked = output<Course>();
+> }
 > ```
-> 
-> **Application Core Provider Subsystems:**
-> * `provideZonelessChangeDetection()`: Drives high-performance screen updates natively using Signals, completely removing the heavy Zone.js macro-task evaluation overhead.
-> * `provideRouter(..., withComponentInputBinding())`: Resolves system URL routes and maps parameters directly into component inputs automatically.
-> * `provideHttpClient()`: Plugs in the low-level asynchronous networking client to enable backend communications with your .NET Core Web API.
+> *Component Interface Architecture:*
+> * `input.required<Course>()`: Declares a mandatory boundary parameter. If a parent template omits this property, the compiler throws an error immediately rather than risking a runtime crash.
+> * `output<Course>()`: Declares an event stream. The parent template listens to this outbound signal exactly like a native DOM click event.
+> * `selector: "tms-course-card"`: The custom HTML tag name utilized in parent templates (`<tms-course-card>`). The `tms-` prefix prevents collisions with native elements.
 
 > [!NOTE]
-> **Step 3: Generate the Dashboard Component**
+> **Step 3: Build the Card Template**
 > 
-> Execute the schematic generator ensuring explicit file-suffix preservation for proper feature colocation:
-> ```bash
-> ng generate component features/student-dashboard --type=component
+> Open `src/app/ui/course-card/course-card.component.html`. Declare structural elements and property bindings to reflect your API's capacity fields:
+> ```html
+> <div class="card">
+>   <h3>{{ course().title }} ({{ course().code }})</h3>
+>   <p>
+>     Enrolled {{ course().enrollmentCount }} of {{ course().maxCapacity }} seats
+>   </p>
+>   <span 
+>     class="badge" 
+>     [class.closed]="course().enrollmentCount >= course().maxCapacity">
+>     {{ course().enrollmentCount >= course().maxCapacity ? "Full" : "Accepting enrollments" }}
+>   </span>
+>   <button 
+>     (click)="enrollClicked.emit(course())" 
+>     [disabled]="course().enrollmentCount >= course().maxCapacity">
+>     Enroll
+>   </button>
+> </div>
 > ```
-> 
-> **Generated Workspace Deliverables:**
-> * `student-dashboard.component.ts`: The TypeScript logic container defining your state engines and computations.
-> * `student-dashboard.component.html`: The structural markup blueprint declaring what your student sees.
-> * `student-dashboard.component.scss`: The local stylesheet isolated explicitly to this feature's layout boundaries.
+> *Template Compilation Features:*
+> * `course().title`: Because the input is a signal, you evaluate it using `()` to unpack the current immutable state before accessing fields.
+> * `[class.closed]`: Square brackets denote a property binding. When the capacity limit is breached, the class is added dynamically.
+> * `enrollClicked.emit(course())`: Intercepts the native click and dispatches the reactive object back up the component graph.
 
 > [!NOTE]
-> **Step 4: Build the Signal State**
+> **Step 4: Use the Card in the Dashboard**
 > 
-> Open `src/app/features/student-dashboard/student-dashboard.component.ts`. Replace its contents with this reactive script tracking credit status mutations:
-> 
+> Open `src/app/features/student-dashboard/student-dashboard.component.ts`. Update your standalone imports array, seed mock metrics, and declare an enrollment event receiver method:
 > ```typescript
 > import { Component, signal, computed } from "@angular/core";
+> import { CourseCardComponent } from "../../ui/course-card/course-card.component";
+> import { Course } from "../../models/course.model";
 > 
 > @Component({
 >   selector: "app-student-dashboard",
 >   standalone: true,
->   imports: [],
+>   imports: [CourseCardComponent], // Registers the child dependency explicitly
 >   templateUrl: "./student-dashboard.component.html",
->   styleUrl: "./student-dashboard.component.scss",
+>   styleUrl: "./student-dashboard.component.scss"
 > })
 > export class StudentDashboardComponent {
->   // signal() wraps primitive variables into reactive data cells observed by Angular
 >   studentName = signal("Liya Kebede");
 >   earnedCredits = signal(45);
+>   
+>   selectedCourse = signal<Course | null>(null);
+>   
+>   sampleCourse: Course = {
+>     id: 1,
+>     title: "Advanced Java Services",
+>     code: "CSE-101",
+>     maxCapacity: 30,
+>     enrollmentCount: 12,
+>   };
 > 
->   // computed() maps a read-only dependency link that recalculates only when inner signals emit mutations
 >   graduationStatus = computed(() =>
 >     this.earnedCredits() >= 120 ? "Eligible for Graduation" : "In Progress",
 >   );
 > 
->   // Triggering .update() captures current states and computes structural modifications smoothly
 >   registerForClass() {
 >     this.earnedCredits.update((c) => c + 3);
 >   }
+> 
+>   handleEnroll(course: Course) {
+>     this.selectedCourse.set(course);
+>     console.log("Enrollment requested for:", course.title);
+>   }
 > }
 > ```
-
-> [!NOTE]
-> **Step 5: Build the Template Canvas**
+> *Warning: If you utilize `<tms-course-card>` in an HTML template without adding `CourseCardComponent` to the standalone `imports` array, Angular cannot resolve the node and will treat it as a dead text node without generating an exception.*
 > 
-> Open `src/app/features/student-dashboard/student-dashboard.component.html`. Strip the boilerplate file text and insert your data bindings:
-> 
+> Open `src/app/features/student-dashboard/student-dashboard.component.html` and append the card below your existing content:
 > ```html
-> <div class="dashboard">
->   <h1>Welcome, {{ studentName() }}</h1>
->   <p>Credits Earned: {{ earnedCredits() }}</p>
->   <p>Graduation Status: {{ graduationStatus() }}</p>
->   <button (click)="registerForClass()">
->     Register for a Class (+3 credits)
->   </button>
-> </div>
+> <h2>Available Courses</h2>
+> <tms-course-card 
+>   [course]="sampleCourse" 
+>   (enrollClicked)="handleEnroll(\$event)" />
 > ```
-> *Template Integration Mechanisms:*
-> * `{{ earnedCredits() }}`: Double curly braces read values out into your layout. Parentheses are required to evaluate and extract the value from the Signal container.
-> * `(click)="registerForClass()"`: Parentheses denote an outward event binding. When clicked, it hits the backing controller method without raw DOM selectors.
-
-> [!NOTE]
-> **Step 6: Configure Client-Side Routing**
-> 
-> Open `src/app/app.routes.ts` and set up your routing tables using asynchronous code-splitting lazy loading flags:
-> 
-> ```typescript
-> import { Routes } from "@angular/router";
-> 
-> export const routes: Routes = [
->   {
->     path: "dashboard",
->     loadComponent: () =>
->       import("./features/student-dashboard/student-dashboard.component").then(
->         (m) => m.StudentDashboardComponent,
->       ),
->   },
->   { path: "", redirectTo: "dashboard", pathMatch: "full" },
-> ];
-> ```
-> 
-> Finally, open `src/app/app.component.html`, clear the default template landing layout, and insert the framework anchor tag:
-> ```html
-> <router-outlet />
-> ```
-> *Note: `<router-outlet>` acts as a placeholder telling the router where to insert the component matching the current browser URL path.*
-> [!NOTE]
-> **Step 7: Launch the Application**
-> 
-> Start the local development server by executing this command in your terminal:
-> ```bash
-> ng serve
-> ```
-> Open your browser and navigate to `http://localhost:4200/dashboard`.
-> 
-> *Expected Verification Behavior:* The dashboard loads successfully displaying Liya's name, her initial credits (`45`), and her graduation status (`In Progress`). Each click on the registration button increments the credit score by 3. The graduation status remains `In Progress` until the credits counter reaches `120`, at which point it automatically flips to `Eligible for Graduation`.
-
-#### Troubleshooting & Common Edge Cases
-
-| Problem | Likely Cause | Fix |
-| :--- | :--- | :--- |
-| **Blank page at `/dashboard`** | Missing `<router-outlet />` tag placeholder inside `app.component.html`. | Open your `app.component.html` file and ensure it contains exactly `<router-outlet />`. |
-| **`{{ earnedCredits }}` shows `[object Object]`** | Omitted the evaluation parentheses from the signal variable call inside your HTML markup template. | Update the string interpolation expression syntax to call the function: `{{ earnedCredits() }}`. |
-| **“Cannot find module” compiler error** | Typo or incorrect relative path declaration inside the route definition layout block. | Check your relative file import paths inside `app.routes.ts` to ensure they match your folder tree. |
-| **Port 4200 is already in use** | A dangling node process or another local application instance is currently binding to that default port. | Launch the application on an alternative port using: `ng serve --port 4300`, or terminate the blocking process. |
-
-### Checkpoint 1 Achieved
+> *Template Integration Plumbing:*
+> * `[course]="sampleCourse"`: Property binding maps data from the parent down into the child's required input parameter.
+> * `(enrollClicked)="handleEnroll(\$event)"`: Event binding hooks the child's emitter into the parent handler logic. The special `$event` variable captures the exact payload data dispatched from the card component.
