@@ -3,12 +3,11 @@ import { StudentDashboardComponent } from "./features/student-dashboard/student-
 
 export const routes: Routes = [
   { path: "", component: StudentDashboardComponent },
-  { path: "dashboard", component: StudentDashboardComponent }, // ✅ add this
   {
-    path: "courses/:id",
+    path: "enroll",
     loadComponent: () =>
-      import("./features/course-detail/course-detail.component").then(
-        (m) => m.CourseDetailComponent
+      import("./features/enrollment-form/enrollment-form.component").then(
+        (m) => m.EnrollmentFormComponent
       ),
   },
 ];
