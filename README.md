@@ -1,75 +1,106 @@
-### Exercise 3: Loops, Conditionals, and the Empty State
+### Exercise 4: Routing to a Course Detail Page
 
-**Context:** You have a single card working. Now you need a catalog of courses, and you must explicitly handle the case where there are no courses available using Angular's modern built-in control flow blocks.
+**Context:** When Liya clicks on a course title, she should navigate to `/courses/1` and see proof that the route parameter arrived (this exercise forms your navigation spine). A rich detail screen (including title, seat counts, and HATEOAS links from `CourseDetailDto`) would use `CourseService.getById(id())` or pre-loaded data structures; that specific data layering is intentionally out of scope here so you are not debugging HTTP networking and routing engines in the same hour.
 
 > [!NOTE]
-> **Step 1: Create the Catalog Dataset**
+> **Step 1: Generate the Detail Component**
 > 
-> Open `src/app/features/student-dashboard/student-dashboard.component.ts`. Replace your singular `sampleCourse` property with a reactive array signal:
+> Execute the Angular CLI schematic tool to scaffold a new feature routing node:
+> ```bash
+> ng generate component features/course-detail
+> ```
+
+> [!NOTE]
+> **Step 2: Add the Parameterized Route**
+> 
+> Open `src/app/app.routes.ts`. Append the route mapping configuration targeting your route constraint token:
 > ```typescript
-> availableCourses = signal<Course[]>([
->   {
->     id: 1,
->     title: "Advanced Java Services",
->     code: "CSE-101",
->     maxCapacity: 30,
->     enrollmentCount: 10,
->   },
->   {
->     id: 2,
->     title: "Angular UI Lab",
->     code: "CSE-210",
->     maxCapacity: 25,
->     enrollmentCount: 25,
->   },
->   {
->     id: 3,
->     title: "Database Design",
->     code: "CSE-305",
->     maxCapacity: 20,
->     enrollmentCount: 18,
->   },
->   {
->     id: 4,
->     title: "API Security Workshop",
->     code: "CSE-420",
->     maxCapacity: 40,
->     enrollmentCount: 15,
->   },
-> ]);
+> {
+>   path: 'courses/:id',
+>   loadComponent: () => import('./features/course-detail/course-detail.component')
+>     .then(m => m.CourseDetailComponent)
+> }
 > ```
 
 > [!NOTE]
-> **Step 2: Render the Control Flow Template Loop**
+> **Step 3: Use Input Binding for the Route Parameter**
 > 
-> *Required Cleanup:* Exercise 2 left a single `<tms-course-card>` bound to `sampleCourse`. Remove that extra `<h2>` and the single `<tms-course-card [course]="sampleCourse" .../>` from your HTML file to prevent redundant rendering. You can safely delete the unused `sampleCourse` property from your TypeScript class once no code references it.
+> Open `src/app/features/course-detail/course-detail.component.ts`. Map the incoming URL token parameter using modern Signal input values and a side-effect monitoring execution loop:
 > 
-> Open `src/app/features/student-dashboard/student-dashboard.component.html`. Replace the old catalog markup with Angular's modern structural control blocks:
-> ```html
-> <h2>Course Catalog</h2>
+> ```typescript
+> import { Component, input, effect } from "@angular/core";
+> import { RouterLink } from "@angular/router";
 > 
-> @if (availableCourses().length === 0) {
->   <div class="empty-state">
->     <p>No courses are available this term. Check back during registration.</p>
->   </div>
-> } @else {
->   <div class="grid">
->     @for (course of availableCourses(); track course.id) {
->       <tms-course-card [course]="course" (enrollClicked)="handleEnroll(\$event)" />
->     } @empty {
->       <p>No results match your search.</p>
->     }
->   </div>
-> }
+> @Component({
+>   selector: "app-course-detail",
+>   standalone: true,
+>   imports: [RouterLink], // Required to parse routerLink directives in the template HTML
+>   templateUrl: "./course-detail.component.html",
+> })
+> export class CourseDetailComponent {
+>   // Automatically receives the :id parameter from the URL /courses/:id
+>   // Enabled by withComponentInputBinding() inside app.config.ts. Name must match exactly.
+>   id = input.required<string>();
 > 
-> @if (selectedCourse(); as picked) {
->   <p class="selection-hint" role="status">
->     Last enrollment request: <strong>{{ picked.title }}</strong> ({{ picked.code }})
->   </p>
+>   // The constructor sets up effect() to watch and execute code blocks every time id() emits changes
+>   constructor() {
+>     effect(() => {
+>       console.log(`Loading course detail for ID: ${this.id()}`);
+>     });
+>   }
 > }
 > ```
 > 
-> **Core Declarative Syntax Rules Explained:**
-> * `track course.id`: This statement is **mandatory** inside the `@for` block. It establishes a unique identity anchor for every item, allowing Angular to track DOM nodes efficiently during list modifications. Omitting the `track` parameter causes a compilation error.
-> * `@empty`: A built-in sub-block that renders automatically if the collection array evaluated by the `@for` loop contains zero elements.
-> * `selectedCourse(); as picked`: Evaluates the signal and assigns its current non-null value to a local template variable (`picked`). This visual feedback explicitly proves the parent component successfully caught the emitted child event.
+> Open `src/app/features/course-detail/course-detail.component.html`. Declare your navigation link anchor:
+> ```html
+> <h1>Course Detail</h1>
+> <p>Course ID: {{ id() }}</p>
+> <a routerLink="/dashboard">Back to Dashboard</a>
+> ```
+> *Navigation Philosophy:* The `routerLink` attribute performs soft client-side navigation. It intercepts click behavior to update the viewport without performing a heavy browser-level page reload, keeping your local application state memory intact.
+
+> [!NOTE]
+> **Step 4: Link from the Course Card UI**
+> 
+> Open `src/app/ui/course-card/course-card.component.ts`. Register your router component requirements:
+> ```typescript
+> import { Component, input, output } from "@angular/core";
+> import { RouterLink } from "@angular/router";
+> import { Course } from "../../models/course.model";
+> 
+> @Component({
+>   selector: "tms-course-card",
+>   standalone: true,
+>   imports: [RouterLink], // Injects router capabilities straight into the card layout context
+>   templateUrl: "./course-card.component.html",
+>   styleUrl: "./course-card.component.scss",
+> })
+> export class CourseCardComponent {
+>   course = input.required<Course>();
+>   enrollClicked = output<Course>();
+> }
+> ```
+> 
+> Open `src/app/ui/course-card/course-card.component.html`. Wrap the header text node with dynamic parameter interpolation:
+> ```html
+> <h3>
+>   <a [routerLink]="['/courses', course().id]">{{ course().title }}</a>
+>   ({{ course().code }})
+> </h3>
+> ```
+> *Template Compilation Features:* The bracket syntax `[routerLink]` enforces active property binding evaluation. Passing an expression array (`['/courses', course().id]`) causes Angular to compile the path elements into valid target strings dynamically (e.g., `/courses/1`).
+
+#### Troubleshooting & Common Edge Cases
+
+| Problem | Cause | Fix |
+| :--- | :--- | :--- |
+| **Clicking the link does nothing** | `RouterLink` is omitted from the component class's standalone `imports` metadata array. | Import `RouterLink` and add it directly inside the `@Component` imports block. |
+| **URL changes but the page is blank** | Missing the core structural `<router-outlet />` placeholder inside your root application canvas. | Open `app.component.html` and verify the template anchor tag exists. |
+| **`id()` returns `undefined`** | The Signal input identifier name does not match the precise variable name declared inside the routing path template. | Rename the variable to match exactly. The route says `:id`, so your input field must be named `id`. |
+
+---
+
+#### Checkpoint 4 Verification Checklist
+* [ ] Clicking a course title redirects the viewport to `/courses/1` (or your specific entity key matching your metrics)
+* [ ] The course detail text output region accurately presents the expected path index parameter value
+* [ ] The soft-navigation “Back to Dashboard” anchor successfully restores the main view layout without a full page refresh
