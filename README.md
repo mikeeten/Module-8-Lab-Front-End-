@@ -1,106 +1,175 @@
-### Exercise 4: Routing to a Course Detail Page
+### Exercise 5: The Enrollment Form
 
-**Context:** When Liya clicks on a course title, she should navigate to `/courses/1` and see proof that the route parameter arrived (this exercise forms your navigation spine). A rich detail screen (including title, seat counts, and HATEOAS links from `CourseDetailDto`) would use `CourseService.getById(id())` or pre-loaded data structures; that specific data layering is intentionally out of scope here so you are not debugging HTTP networking and routing engines in the same hour.
+**Context:** Liya wants to enroll. She needs a form that captures her Student ID, the term, and optional backup course choices. The form must validate inputs before they reach the .NET API.
 
 > [!NOTE]
-> **Step 1: Generate the Detail Component**
+> **Step 1: Generate the Form Component**
 > 
-> Execute the Angular CLI schematic tool to scaffold a new feature routing node:
+> Scaffold the form feature within your project structure:
 > ```bash
-> ng generate component features/course-detail
+> ng generate component features/enrollment-form
 > ```
 
 > [!NOTE]
-> **Step 2: Add the Parameterized Route**
+> **Step 2: Build the Form Model**
 > 
-> Open `src/app/app.routes.ts`. Append the route mapping configuration targeting your route constraint token:
-> ```typescript
-> {
->   path: 'courses/:id',
->   loadComponent: () => import('./features/course-detail/course-detail.component')
->     .then(m => m.CourseDetailComponent)
-> }
-> ```
-
-> [!NOTE]
-> **Step 3: Use Input Binding for the Route Parameter**
-> 
-> Open `src/app/features/course-detail/course-detail.component.ts`. Map the incoming URL token parameter using modern Signal input values and a side-effect monitoring execution loop:
+> Open `src/app/features/enrollment-form/enrollment-form.component.ts`. Construct the reactive form layout utilizing strongly-typed validation controls:
 > 
 > ```typescript
-> import { Component, input, effect } from "@angular/core";
-> import { RouterLink } from "@angular/router";
+> import { Component, inject, signal } from "@angular/core";
+> import {
+>   FormBuilder,
+>   FormControl,
+>   Validators,
+>   ReactiveFormsModule,
+>   FormArray,
+> } from "@angular/forms";
 > 
 > @Component({
->   selector: "app-course-detail",
+>   selector: "app-enrollment-form",
 >   standalone: true,
->   imports: [RouterLink], // Required to parse routerLink directives in the template HTML
->   templateUrl: "./course-detail.component.html",
+>   imports: [ReactiveFormsModule], // Required without this, Angular does not recognize form directives
+>   templateUrl: "./enrollment-form.component.html",
 > })
-> export class CourseDetailComponent {
->   // Automatically receives the :id parameter from the URL /courses/:id
->   // Enabled by withComponentInputBinding() inside app.config.ts. Name must match exactly.
->   id = input.required<string>();
+> export class EnrollmentFormComponent {
+>   // inject(FormBuilder) is Angular's way of requesting a service.
+>   private fb = inject(FormBuilder);
+>   
+>   // A signal to track whether the form was submitted (for showing a success message)
+>   submitted = signal(false);
 > 
->   // The constructor sets up effect() to watch and execute code blocks every time id() emits changes
->   constructor() {
->     effect(() => {
->       console.log(`Loading course detail for ID: ${this.id()}`);
->     });
+>   // fb.nonNullable.group({...}) ensures that all values are typed as 'string' instead of 'string | null'
+>   form = this.fb.nonNullable.group({
+>     studentId: [
+>       "",
+>       [Validators.required, Validators.pattern("^STU-[0-9]{4}\$")],
+>     ],
+>     courseId: ["", Validators.required],
+>     term: ["Fall 2026", Validators.required], // Pre-filled with a default term
+>     notes: [""], // No validators this field is optional
+>     backupCourses: this.fb.array<FormControl<string>>([]), // Starts empty, user adds rows dynamically
+>   });
+> 
+>   // A shortcut so you can write "this.backups" instead of "this.form.controls.backupCourses"
+>   get backups() {
+>     return this.form.controls.backupCourses;
+>   }
+> 
+>   // Adds a new empty text input to the backup courses array
+>   addBackup() {
+>     this.backups.push(
+>       this.fb.control("", {
+>         nonNullable: true,
+>         validators: Validators.required,
+>       }),
+>     );
+>   }
+> 
+>   // Removes a specific backup course row by its position in the array
+>   removeBackup(index: number) {
+>     this.backups.removeAt(index);
+>   }
+> 
+>   submit() {
+>     if (this.form.valid) {
+>       // getRawValue() extracts the full form data as a JSON object, preserving disabled fields.
+>       const payload = this.form.getRawValue();
+>       console.log("Enrollment payload:", payload);
+>       this.submitted.set(true);
+>     } else {
+>       // markAllAsTouched() forces Angular to show validation errors on every field.
+>       this.form.markAllAsTouched();
+>     }
 >   }
 > }
 > ```
-> 
-> Open `src/app/features/course-detail/course-detail.component.html`. Declare your navigation link anchor:
-> ```html
-> <h1>Course Detail</h1>
-> <p>Course ID: {{ id() }}</p>
-> <a routerLink="/dashboard">Back to Dashboard</a>
-> ```
-> *Navigation Philosophy:* The `routerLink` attribute performs soft client-side navigation. It intercepts click behavior to update the viewport without performing a heavy browser-level page reload, keeping your local application state memory intact.
 
 > [!NOTE]
-> **Step 4: Link from the Course Card UI**
+> **Step 3: Build the Form Template**
 > 
-> Open `src/app/ui/course-card/course-card.component.ts`. Register your router component requirements:
-> ```typescript
-> import { Component, input, output } from "@angular/core";
-> import { RouterLink } from "@angular/router";
-> import { Course } from "../../models/course.model";
+> Open `src/app/features/enrollment-form/enrollment-form.component.html`. Implement control flow logic and attach form controls:
 > 
-> @Component({
->   selector: "tms-course-card",
->   standalone: true,
->   imports: [RouterLink], // Injects router capabilities straight into the card layout context
->   templateUrl: "./course-card.component.html",
->   styleUrl: "./course-card.component.scss",
-> })
-> export class CourseCardComponent {
->   course = input.required<Course>();
->   enrollClicked = output<Course>();
+> ```html
+> <h2>Course Enrollment</h2>
+> @if (submitted()) {
+>   <div class="success">
+>     Enrollment submitted. Check the console for the payload.
+>   </div>
+> } @else {
+>   <!-- [formGroup]="form" connects this <form> tag to the TypeScript form object you built above. -->
+>   <form [formGroup]="form" (ngSubmit)="submit()">
+>     <label for="studentId">Student ID</label>
+>     <input
+>       id="studentId"
+>       formControlName="studentId"
+>       placeholder="e.g. STU-1234"
+>     />
+>     <!-- Show the error ONLY when the user has clicked into and out of the field (.touched) AND it is invalid -->
+>     @if (form.controls.studentId.touched && form.controls.studentId.invalid) {
+>       <span class="error">Enter a valid Student ID (format: STU-0000)</span>
+>     }
+> 
+>     <label for="courseId">Course ID</label>
+>     <input
+>       id="courseId"
+>       formControlName="courseId"
+>       placeholder="e.g. 1 (TMS course primary key)"
+>     />
+>     @if (form.controls.courseId.touched && form.controls.courseId.invalid){
+>       <span class="error">Course ID is required</span>
+>     }
+> 
+>     <label for="term">Term</label>
+>     <input id="term" formControlName="term" />
+> 
+>     <label for="notes">Notes (optional)</label>
+>     <textarea id="notes" formControlName="notes"></textarea>
+> 
+>     <h3>Backup Courses</h3>
+>     <!-- \$index is a built-in variable inside @for loops indicating the current position (0, 1, 2...) -->
+>     @for (backup of backups.controls; track \$index) {
+>       <div class="backup-row">
+>         <!-- [formControl] binds directly to the control object in the array. -->
+>         <input
+>           [formControl]="backup"
+>           [placeholder]="'Backup course ' + (\$index + 1)"
+>         />
+>         <!-- type="button" prevents this from submitting the form. -->
+>         <button type="button" (click)="removeBackup(\$index)">Remove</button>
+>       </div>
+>     }
+>     <button type="button" (click)="addBackup()">Add Backup Course</button>
+>     <hr />
+>     
+>     <!-- Disables the button when ANY field fails validation. -->
+>     <button type="submit" [disabled]="form.invalid">Confirm Enrollment</button>
+> </form>
 > }
 > ```
+
+> [!NOTE]
+> **Step 4: Route to the Form**
 > 
-> Open `src/app/ui/course-card/course-card.component.html`. Wrap the header text node with dynamic parameter interpolation:
-> ```html
-> <h3>
->   <a [routerLink]="['/courses', course().id]">{{ course().title }}</a>
->   ({{ course().code }})
-> </h3>
+> Open `src/app/app.routes.ts`. Append the enrollment path to your routes configuration array:
+> ```typescript
+> {
+>   path: 'enroll',
+>   loadComponent: () => import('./features/enrollment-form/enrollment-form.component')
+>     .then(m => m.EnrollmentFormComponent)
+> }
 > ```
-> *Template Compilation Features:* The bracket syntax `[routerLink]` enforces active property binding evaluation. Passing an expression array (`['/courses', course().id]`) causes Angular to compile the path elements into valid target strings dynamically (e.g., `/courses/1`).
+> *Note: Open the form at `http://localhost:4200/enroll`. You can also add a `routerLink="/enroll"` onto the dashboard page layout to make it easy to find.*
 
 #### Troubleshooting & Common Edge Cases
-
-| Problem | Cause | Fix |
-| :--- | :--- | :--- |
-| **Clicking the link does nothing** | `RouterLink` is omitted from the component class's standalone `imports` metadata array. | Import `RouterLink` and add it directly inside the `@Component` imports block. |
-| **URL changes but the page is blank** | Missing the core structural `<router-outlet />` placeholder inside your root application canvas. | Open `app.component.html` and verify the template anchor tag exists. |
-| **`id()` returns `undefined`** | The Signal input identifier name does not match the precise variable name declared inside the routing path template. | Rename the variable to match exactly. The route says `:id`, so your input field must be named `id`. |
+* **Validation messages do not appear:** You are likely checking `.invalid` without checking `.touched`. Angular intentionally skips highlighting pristine (unclicked) fields as errors. Call `.markAllAsTouched()` on form submission.
+* **`formGroup` directive not recognized:** Ensure you have added `ReactiveFormsModule` directly into the component class's standalone `imports` array.
+* **Template errors when mixing form styles:** Attempting to use two-way syntax `[(ngModel)]` alongside `[formGroup]` triggers explicit framework exceptions. Commit to a single strategy; for this structure, use only Reactive Forms directives (`formControlName`, `[formControl]`).
 
 ---
 
-#### Checkpoint 4 Verification Checklist
-* [ ] Clicking a course title redirects the viewport to `/courses/1` (or your specific entity key matching your metrics)
-* [ ] The course detail text output region accurately presents the expected path index parameter value
-* [ ] The soft-navigation “Back to Dashboard” anchor successfully restores the main view layout without a full page refresh
+#### Checkpoint 5 Verification Checklist
+* [ ] The form renders with Student ID, Course ID, Term, and Notes fields
+* [ ] Clicking “Add Backup Course” adds a new dynamic input row
+* [ ] Clicking “Remove” drops that specific row from the layout array
+* [ ] Submitting with an empty or mistyped Student ID triggers the verification error text block
+* [ ] A valid submission packages data and logs the JSON payload to the browser console
