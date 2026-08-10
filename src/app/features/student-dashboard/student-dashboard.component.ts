@@ -1,42 +1,32 @@
-import { Component, signal } from "@angular/core";
-import { NgFor, NgIf } from "@angular/common";
+import { Component, signal, computed, inject } from "@angular/core";
 import { CourseCardComponent } from "../../ui/course-card/course-card.component";
+import { rxResource } from "@angular/core/rxjs-interop";
+import { CourseService } from "../../services/course.service";
 import { Course } from "../../models/course.model";
 
 @Component({
   selector: "app-student-dashboard",
   standalone: true,
-  imports: [CourseCardComponent, NgFor, NgIf],
+  imports: [CourseCardComponent],
   templateUrl: "./student-dashboard.component.html",
-  styleUrl: "./student-dashboard.component.scss",
+  styleUrls: ["./student-dashboard.component.scss"],   // ✅ plural
 })
 export class StudentDashboardComponent {
-  selectedCourse = signal<Course | null>(null);
+  private api = inject(CourseService);
 
-  // Array of courses instead of a single one
-  courses: Course[] = [
-    {
-      id: 1,
-      title: "Advanced Java Services",
-      code: "CSE-101",
-      maxCapacity: 30,
-      enrollmentCount: 12,
-    },
-    {
-      id: 2,
-      title: "Angular Fundamentals",
-      code: "WEB-201",
-      maxCapacity: 25,
-      enrollmentCount: 25, // full
-    },
-    {
-      id: 3,
-      title: "Database Systems",
-      code: "DB-301",
-      maxCapacity: 40,
-      enrollmentCount: 5,
-    },
-  ];
+  studentName = signal("Liya Kebede");
+  earnedCredits = signal(45);
+
+  graduationStatus = computed(() =>
+    this.earnedCredits() >= 120 ? "Eligible for Graduation" : "In Progress"
+  );
+
+  // ✅ use stream (supported in your Angular version)
+  coursesResource = rxResource({
+    stream: () => this.api.getAll(),
+  });
+
+  selectedCourse = signal<Course | null>(null);
 
   handleEnroll(course: Course) {
     this.selectedCourse.set(course);
