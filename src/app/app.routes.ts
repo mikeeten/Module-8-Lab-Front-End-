@@ -1,13 +1,12 @@
-import { Routes } from "@angular/router";
-import { StudentDashboardComponent } from "./features/student-dashboard/student-dashboard.component";
+import { Routes } from '@angular/router';
 
 export const routes: Routes = [
-  { path: "", component: StudentDashboardComponent },
   {
-    path: "enroll",
+    path: 'dashboard',
     loadComponent: () =>
-      import("./features/enrollment-form/enrollment-form.component").then(
-        (m) => m.EnrollmentFormComponent
+      import('./features/student-dashboard/student-dashboard.component').then(
+        (m) => m.StudentDashboardComponent
       ),
   },
+  { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
 ];
