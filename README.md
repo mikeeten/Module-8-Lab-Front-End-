@@ -1,134 +1,120 @@
-### Exercise 2: Performance with @defer Blocks
+### Exercise 3: Enterprise Data Grid with Angular Material
 
-**Context:** When you wrap a component in a `@defer` block, the Angular compiler separates that component’s code into a distinct JavaScript chunk file during the compilation build. The main application JavaScript bundle loads instantly without the deferred chunk. The chunk only downloads when the specific trigger condition fires. This is not a CSS `display: none` layout mask; the source code literally does not exist inside the browser’s memory until the trigger fires.
-
-#### Step 1: Generate the Components
-You need two new components: the instructor dashboard (the parent page) and the analytics chart (the heavy child component that gets deferred):
-```bash
-ng generate component features/instructor-dashboard
-ng generate component ui/analytics-chart
-```
+**Context:** Basic loops using `@for` are effective for simple card arrangements but fall short when handling large enterprise datasets. For robust data management, applications require advanced column sorting, row pagination, and comprehensive ARIA accessibility features. Angular Material's `MatTable` package delivers these capabilities out of the box, utilizing a `MatTableDataSource` broker to wrap core arrays and feed layout properties straight to Material directives.
 
 > [!NOTE]
-> **Step 2: Build the Analytics Chart Component**
+> **Step 1: Refactor the Enrollment List Component**
 > 
-> This component simulates a heavyweight charting library. In a production TMS, this would be a real chart framework (such as Chart.js or ngx-charts) rendering enrollment trends. For this exercise, a styled placeholder with enough internal logic is sufficient to produce a measurable separate code chunk. 
+> Refactor your existing `EnrollmentListComponent` to replace the generic card layout with a structured Material grid. 
 > 
-> Open `src/app/ui/analytics-chart/analytics-chart.component.ts` and replace its contents:
+> Open `src/app/features/enrollment-list/enrollment-list.component.ts` and replace its entire content:
 > ```typescript
-> import { Component, computed, input } from '@angular/core';
+> import { Component, viewChild, effect, inject } from '@angular/core';
+> import { MatTableModule, MatTableDataSource } from '@angular/material/table';
+> import { MatPaginatorModule, MatPaginator } from '@angular/material/paginator';
+> import { MatSortModule, MatSort } from '@angular/material/sort';
+> import { EnrollmentStore } from '../../store/enrollment.store';
 > import { Enrollment } from '../../models/enrollment.model';
 > 
 > @Component({
->   selector: 'tms-analytics-chart',
+>   selector: 'tms-enrollment-list',
 >   standalone: true,
->   template: `
->     <div class="chart-container">
->       <h3>Enrollment Analytics</h3>
->       <div class="chart-bars">
->         <div class="bar approved" [style.height.px]="approvedHeight()">
->           <span>Approved</span>
->         </div>
->         <div class="bar pending" [style.height.px]="pendingHeight()">
->           <span>Pending</span>
->         </div>
->         <div class="bar rejected" [style.height.px]="rejectedHeight()">
->           <span>Rejected</span>
->         </div>
->       </div>
->       <p class="chart-summary">
->         Total records: {{ data().length }}
->       </p>
->     </div>
->   `,
->   styleUrl: './analytics-chart.component.scss'
+>   imports: [MatTableModule, MatPaginatorModule, MatSortModule],
+>   templateUrl: './enrollment-list.component.html',
+>   styleUrl: './enrollment-list.component.scss'
 > })
-> export class AnalyticsChartComponent {
->   data = input.required<Enrollment[]>();
-> 
->   // computed() memoizes the result — the filter only re-runs when data() changes,
->   // not on every change detection cycle. This is the signal-first pattern M9 teaches.
->   approvedHeight = computed(() => {
->     const count = this.data().filter(e => e.status === 'Approved').length;
->     return Math.max(20, count * 3);
->   });
-> 
->   pendingHeight = computed(() => {
->     const count = this.data().filter(e => e.status === 'Pending').length;
->     return Math.max(20, count * 3);
->   });
-> 
->   rejectedHeight = computed(() => {
->     const count = this.data().filter(e => e.status === 'Rejected').length;
->     return Math.max(20, count * 3);
->   });
-> }
-> ```
-
-> [!NOTE]
-> **Step 3: Build the Instructor Dashboard Parent Page**
-> 
-> Open `src/app/features/instructor-dashboard/instructor-dashboard.component.ts` and replace its contents. The critical UI components (enrollment counts, pending approvals, and action buttons) render immediately, while the heavy chart defers:
-> ```typescript
-> import { Component, inject, OnInit } from '@angular/core';
-> import { EnrollmentStore } from '../../store/enrollment.store';
-> import { AnalyticsChartComponent } from '../../ui/analytics-chart/analytics-chart.component';
-> 
-> @Component({
->   selector: 'tms-instructor-dashboard',
->   standalone: true,
->   imports: [AnalyticsChartComponent],
->   templateUrl: './instructor-dashboard.component.html',
->   styleUrl: './instructor-dashboard.component.scss'
-> })
-> export class InstructorDashboardComponent implements OnInit {
+> export class EnrollmentListComponent {
 >   store = inject(EnrollmentStore);
+>   displayedColumns = ['studentName', 'courseName', 'status', 'actions'];
+>   
+>   // MatTableDataSource bridges our store data into Material's rendering pipeline
+>   dataSource = new MatTableDataSource<Enrollment>();
 > 
->   ngOnInit() {
+>   // viewChild.required() is Angular's signal-based replacement for the legacy @ViewChild decorator.
+>   // These return responsive signals that update automatically as soon as the DOM queries resolve,
+>   // eliminating the need for the ngAfterViewInit lifecycle hook.
+>   readonly paginator = viewChild.required(MatPaginator);
+>   readonly sort = viewChild.required(MatSort);
+> 
+>   constructor() {
+>     // Effect 1: Push store entities into the Material data source whenever they change.
+>     // Fires automatically on mutations (approve, load, rollback) to re-render the view layer.
+>     effect(() => {
+>       this.dataSource.data = this.store.entities();
+>     });
+> 
+>     // Effect 2: Wire paginator and sort controls once Angular resolves the view queries.
+>     // Automatically handles execution as soon as the signals emit the bound template elements.
+>     effect(() => {
+>       this.dataSource.paginator = this.paginator();
+>       this.dataSource.sort = this.sort();
+>     });
+> 
+>     // Load enrollments on component creation with zero lifecycle hook dependencies
 >     this.store.loadEnrollments();
 >   }
 > }
 > ```
-> *Design Note: AnalyticsChartComponent remains declared in the standalone imports array so the compiler can validate the `<tms-analytics-chart>` selector in the template. Because the component is used exclusively inside a `@defer` block, Angular is smart enough to extract it into a separate chunk automatically without pulling it into the main bundle.*
 
 > [!NOTE]
-> **Step 4: Build the Dashboard Markup Template**
+> **Step 2: Build the Grid Template**
 > 
-> Open `src/app/features/instructor-dashboard/instructor-dashboard.component.html` and append the following template layout containing your lazy-loading block rules:
+> Open `src/app/features/enrollment-list/enrollment-list.component.html` and replace its entire layout markup code:
 > ```html
-> <!-- Renders instantly on any connection speed -->
-> <div class="dashboard-header">
->   <h1>Instructor Command Center</h1>
->   <div class="kpi-row">
->     <div class="kpi-card">
->       <span class="kpi-value">{{ store.entities().length }}</span>
->       <span class="kpi-label">Total Enrollments</span>
->     </div>
->     <div class="kpi-card pending">
->       <span class="kpi-value">{{ store.pendingCount() }}</span>
->       <span class="kpi-label">Pending Approval</span>
->     </div>
->   </div>
-> </div>
+> <h2>Enrollment Records</h2>
 > 
-> <!-- DEFERRED UI: The chart code lives in a separate .js chunk file -->
-> <div class="chart-section">
->   @defer (on viewport; prefetch on idle(500)) {
->     <tms-analytics-chart [data]="store.entities()" />
->   } @placeholder {
->     <div class="skeleton-chart">Scroll down to view analytics...</div>
->   } @loading (minimum 500ms) {
->     <div class="spinner">Downloading chart engine...</div>
->   } @error {
->     <p>Failed to load chart. Check your connection.</p>
->   }
-> </div>
+> @if (store.isLoading()) {
+>   <p>Loading enrollments...</p>
+> }
+> 
+> @if (store.error()) {
+>   <p class="error">{{ store.error() }}</p>
+> }
+> 
+> <table mat-table [dataSource]="dataSource" matSort class="mat-elevation-z8">
+>   <!-- Student Name Column -->
+>   <ng-container matColumnDef="studentName">
+>     <th mat-header-cell *matHeaderCellDef mat-sort-header>Student</th>
+>     <td mat-cell *matCellDef="let row">{{ row.studentName }}</td>
+>   </ng-container>
+> 
+>   <!-- Course Name Column -->
+>   <ng-container matColumnDef="courseName">
+>     <th mat-header-cell *matHeaderCellDef mat-sort-header>Course</th>
+>     <td mat-cell *matCellDef="let row">{{ row.courseName }}</td>
+>   </ng-container>
+> 
+>   <!-- Status Column -->
+>   <ng-container matColumnDef="status">
+>     <th mat-header-cell *matHeaderCellDef mat-sort-header>Status</th>
+>     <td mat-cell *matCellDef="let row">
+>       <span class="status-badge" [class]="row.status.toLowerCase()">{{ row.status }}</span>
+>     </td>
+>   </ng-container>
+> 
+>   <!-- Actions Column -->
+>   <ng-container matColumnDef="actions">
+>     <th mat-header-cell *matHeaderCellDef>Actions</th>
+>     <td mat-cell *matCellDef="let row">
+>       @if (row.status === 'Pending') {
+>         <button (click)="store.approveEnrollment(row.id)">Approve</button>
+>       }
+>     </td>
+>   </ng-container>
+> 
+>   <!-- Row definitions -->
+>   <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+>   <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
+> </table>
+> 
+> <mat-paginator [pageSizeOptions]="[10, 25, 50]" showFirstLastButtons></mat-paginator>
 > ```
+> *Why structural cell definitions match templates:* The grid system continues to leverage asterisks syntax (`*matHeaderCellDef`, `*matCellDef`) instead of modern `@for` blocks because the data table architecture is fundamentally template-driven. Each column container acts as a repeatable structural blueprint that the grid framework instantiates contextually per row to manage accessibility, row generation, and internal virtual sorting vectors.
 
 > [!NOTE]
-> **Step 5: Wire the Dashboard into Your Application Routing**
+> **Step 3: Register the Enrollment Index Route**
 > 
-> Open `src/app/app.routes.ts` and declare a lazy-loaded route mapping for the instructor dashboard view:
+> Open `src/app/app.routes.ts` and ensure your collection routing matches your feature navigation tables:
 > ```typescript
 > import { Routes } from '@angular/router';
 > 
@@ -139,40 +125,19 @@ ng generate component ui/analytics-chart
 >       import('./features/instructor-dashboard/instructor-dashboard.component')
 >         .then(m => m.InstructorDashboardComponent)
 >   },
->   // ... your existing routes (enrollment-list, etc.)
+>   {
+>     path: 'enrollments',
+>     loadComponent: () =>
+>       import('./features/enrollment-list/enrollment-list.component')
+>         .then(m => m.EnrollmentListComponent)
+>   },
 >   { path: '', redirectTo: 'dashboard', pathMatch: 'full' }
 > ];
 > ```
-> *Lazy Loading Pipeline Architecture:* The `loadComponent` syntax establishes lazy-loaded, route-level code splitting. Combined with the localized template `@defer` statement, you have built two distinct layers of code optimization: the route chunk handles the main dashboard framework, and the viewport trigger loads the auxiliary chart assets only when scrolled into view.
-#### Architectural Deep Dive: What Each Piece Does
-* **`on viewport`:** The chunk download triggers when the `<div class="chart-section">` scrolls into the browser’s visible area. Internally, Angular leverages `IntersectionObserver`—the same native browser API that powers lazy-loaded image elements.
-* **`prefetch on idle(500)`:** Even before the user scrolls, Angular begins downloading the bundle chunk file during browser idle time. The `(500)` is a timeout constraint in milliseconds: if the client browser never reaches a true idle state (common on low-powered tablets), the prefetch fires after 500ms anyway. Without this timeout guard, `requestIdleCallback` can wait indefinitely on overloaded devices.
-* **`@placeholder`:** Renders instantly on initial page load. This is what Liya sees while she reads enrollment counts—preventing a blank viewport screen. Enforcing a `min-height: 250px` layout style keeps it safely below the fold on mobile devices.
-* **`@loading (minimum 500ms)`:** Displays an active loading spinner component while the chunk downloads. The `minimum 500ms` parameter prevents an aggressive, jarring visual flash if the download network request completes in under 50ms.
-* **`@error`:** Renders safely if the bundle chunk download fails completely (e.g., the client device drops offline mid-download).
 
-#### A Note on OnPush Change Detection Optimization
-Open your generated `instructor-dashboard.component.ts`. Notice that the Angular CLI configures every component class with a default execution property:
-```typescript
-changeDetection: ChangeDetectionStrategy.OnPush
-```
-In older framework versions, Angular re-evaluated every component in the virtual DOM tree on any browser macro-task event—a legacy strategy now renamed Eager and deprecated. With `OnPush`, Angular only re-checks a component node when its signal-bound inputs change reference or when an internal `signal()` it reads emits a new value. Because every component in this module reads from the shared `EnrollmentStore`, `OnPush` integration works naturally. This optimization keeps your UI fast even when processing up to 5,000 table rows.
-
----
-
-#### Exercise 2 Verification and Testing Matrix
-Follow these verification steps in exact chronological order to confirm your asset-splitting compilation architecture:
-
-1. **Build and Validate Chunk Splitting:** Execute a production build script from your terminal:
-   ```bash
-   ng build
-   ```
-   Examine the compilation directory summary logs. You should see a separate chunk file listed (e.g., `chunk-XXXX.js`). This confirms that the analytics chart source code lives inside its own discrete file, physically isolated from the main app bundle.
-2. **Simulate a Slow Network Connection:** Initialize the local development server:
-   ```bash
-   ng serve
-   ```
-   Open Chrome Developer Tools (`F12`) and navigate to the **Network** tab. Set the throttling profile dropdown selector to **Slow 3G**, then reload `http://localhost:4200/dashboard`.
-3. **Confirm Critical UI Load Priority:** The critical dashboard header ("Instructor Command Center"), total enrollment counts, and pending metrics must appear within 1–2 seconds. The deferred section must display your `@placeholder` skeleton layout ("Scroll down to view analytics...").
-4. **Trigger Viewport Deferred Chunk Fetching:** Scroll down the viewport page until the chart element enters your view. Watch the active request streams inside your Network tab. A new asynchronous JavaScript file entry (`chunk-XXXX.js`) must appear in the request list as the skeleton swaps to your placeholder spinner before rendering the chart.
-5. **Validate Lazy Isolation Boundaries:** Scroll back to the top of the Network tab request log. Verify that the chart file asset was completely absent from the initial landing page load bundle requests, confirming it fetched exclusively when triggered by scrolling.
+#### Exercise 3 Verification and Testing Checklist
+1. **Initialize the Frontend Workspace:** Spin up your client server instance (`ng serve`) and navigate your browser window to `http://localhost:4200/enrollments`.
+2. **Validate Active Data Sorting:** Click the **Student** header segment. Verify rows organize alphabetically. Toggle a second click to check inverse ordering. Repeat validation against **Course** and **Status** layout blocks.
+3. **Validate Row Pagination Controls:** Ensure that data blocks scale smoothly by changing page sizing dropdown targets between 10, 25, and 50 configurations, navigating views using the pagination forward/back arrows.
+4. **Verify Asynchronous Optimistic Actions:** Find a row item containing a "Pending" status and select **Approve**. Confirm that the element status updates immediately. If the separate instructor counter dashboard tab is open simultaneously, check that the global pending total drops immediately.
+5. **Enforce Screen Accessibility Policies:** Use your keyboard `Tab` key to shift cursor focus directly inside the data grid headers. Verify that hitting `Enter` successfully executes sorting rules, ensuring text elements announce properly on standard screen-reader clients.
