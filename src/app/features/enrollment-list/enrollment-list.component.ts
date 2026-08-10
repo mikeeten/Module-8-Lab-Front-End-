@@ -17,3 +17,4 @@ export class EnrollmentListComponent implements OnInit {
     this.store.approveEnrollment(id);
   }
 }
+
