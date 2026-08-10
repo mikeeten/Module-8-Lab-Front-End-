@@ -22,6 +22,6 @@ rel: string;
 method: string;
 }
 /** Detail payload — mirrors `CourseDetailDto` (list rows do not include `links`). */
-export interface CourseDetail extends Course {
+export interface CourseDetailDto extends Course {
 links: readonly CourseLink[];
 }
