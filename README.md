@@ -1,175 +1,153 @@
-### Exercise 5: The Enrollment Form
+### Exercise 6: Connecting to the .NET API
 
-**Context:** Liya wants to enroll. She needs a form that captures her Student ID, the term, and optional backup course choices. The form must validate inputs before they reach the .NET API.
+**Context:** Mock data has brought you this far. Now you will connect your Angular client frontend directly to your running .NET Web API microservice. 
+
+#### Asynchronous Architecture: Observables vs. Signals
+Up to this point, signals and computed dependencies have behaved as synchronous primitives within your templates. Conversely, the framework `HttpClient.get()` method returns an **Observable**—a lazy execution stream that emits its asynchronous value over time before completing. Someone must explicitly subscribe to open the stream and receive data payloads. 
+
+To bridge this boundary cleanly and avoid memory leaks from manual setups, we leverage `rxResource`. This wrapper encapsulates the asynchronous RxJS streaming logic inside the service layer while exposing simple signals (`.value()`, `.isLoading()`, and `.error()`) straight to the rendering templates.
 
 > [!NOTE]
-> **Step 1: Generate the Form Component**
+> **Step 1: Verify Your API Layer Status**
 > 
-> Scaffold the form feature within your project structure:
+> Spin up your .NET backend context from a separate terminal instance to confirm that it exposes valid JSON catalogs rather than raw root-level arrays:
 > ```bash
-> ng generate component features/enrollment-form
+> cd path/to/your/tms-api
+> dotnet run
 > ```
+> Verify your live integration payloads using cURL or Postman:
+> * **V1/M6 Contracts (`GET /api/courses`):** The catalog items are wrapped inside an envelope object where the actual rows occupy the `items` array property.
+> * **V2 Contracts (`GET /api/v2/courses`):** The model rows are wrapped within the `data` array property, while metadata maps underneath the `meta` nested block. 
+> 
+> *Integration Mapping Strategy:* If you consume a V2 endpoint schema, remember to update your frontend RxJS `.pipe(map(...))` operator chains from `p.items` to `p.data` to match the data model format exactly.
 
 > [!NOTE]
-> **Step 2: Build the Form Model**
+> **Step 2: Create the Course Service**
 > 
-> Open `src/app/features/enrollment-form/enrollment-form.component.ts`. Construct the reactive form layout utilizing strongly-typed validation controls:
+> Generate a single shared service layer using the Angular CLI tool schema:
+> ```bash
+> ng generate service services/course --type=service
+> ```
+> Open `src/app/services/course.service.ts` and replace the code skeleton with this dependency configuration mapping toward your .NET endpoint:
+> ```typescript
+> import { Service, inject } from "@angular/core";
+> import { HttpClient } from "@angular/common/http";
+> import { map } from "rxjs/operators";
+> import { Course, PagedResponse } from "../models/course.model";
+> 
+> @Service()
+> public class CourseService {
+>   private http = inject(HttpClient);
+>   private baseUrl = "https://localhost:5001/api/courses";
+> 
+>   getAll(page = 1, pageSize = 50) {
+>     return this.http
+>       .get<PagedResponse<Course>>(this.baseUrl, {
+>         params: { page: page.toString(), pageSize: pageSize.toString() },
+>       })
+>       .pipe(map((p) => p.items)); // Update target properties to p.data if integrating against V2 routes
+>   }
+> 
+>   getById(id: string) {
+>     return this.http.get<CourseDetail>(`\${this.baseUrl}/\${id}`);
+>   }
+> }
+> ```
+> *Design Note: The modern `@Service()` decorator establishes this class as an app-wide singleton provider instance, matching the functionality of `AddSingleton<T>()` inside the .NET dependency injection engine.*
+
+> [!NOTE]
+> **Step 3: Consume the Service with rxResource**
+> 
+> Open your existing `student-dashboard.component.ts`. Clean out your hardcoded `availableCourses` signal arrays along with the supporting mock objects. Merge the modern asynchronous tracking resource configuration directly into your controller layout:
 > 
 > ```typescript
-> import { Component, inject, signal } from "@angular/core";
-> import {
->   FormBuilder,
->   FormControl,
->   Validators,
->   ReactiveFormsModule,
->   FormArray,
-> } from "@angular/forms";
+> import { Component, signal, computed, inject } from "@angular/core";
+> import { rxResource } from "@angular/core/rxjs-interop";
+> import { CourseCardComponent } from "../../ui/course-card/course-card.component";
+> import { CourseService } from "../../services/course.service";
 > 
 > @Component({
->   selector: "app-enrollment-form",
+>   selector: "app-student-dashboard",
 >   standalone: true,
->   imports: [ReactiveFormsModule], // Required without this, Angular does not recognize form directives
->   templateUrl: "./enrollment-form.component.html",
+>   imports: [CourseCardComponent],
+>   templateUrl: "./student-dashboard.component.html",
+>   styleUrl: "./student-dashboard.component.scss",
 > })
-> export class EnrollmentFormComponent {
->   // inject(FormBuilder) is Angular's way of requesting a service.
->   private fb = inject(FormBuilder);
+> export class StudentDashboardComponent {
+>   private api = inject(CourseService);
 >   
->   // A signal to track whether the form was submitted (for showing a success message)
->   submitted = signal(false);
+>   studentName = signal("Liya Kebede");
+>   earnedCredits = signal(45);
+>   selectedCourse = signal<Course | null>(null);
 > 
->   // fb.nonNullable.group({...}) ensures that all values are typed as 'string' instead of 'string | null'
->   form = this.fb.nonNullable.group({
->     studentId: [
->       "",
->       [Validators.required, Validators.pattern("^STU-[0-9]{4}\$")],
->     ],
->     courseId: ["", Validators.required],
->     term: ["Fall 2026", Validators.required], // Pre-filled with a default term
->     notes: [""], // No validators this field is optional
->     backupCourses: this.fb.array<FormControl<string>>([]), // Starts empty, user adds rows dynamically
+>   graduationStatus = computed(() =>
+>     this.earnedCredits() >= 120 ? "Eligible for Graduation" : "In Progress",
+>   );
+> 
+>   // rxResource safely manages under-the-hood subscriptions and handles cleanups automatically upon destruction
+>   coursesResource = rxResource({
+>     stream: () => this.api.getAll(),
 >   });
 > 
->   // A shortcut so you can write "this.backups" instead of "this.form.controls.backupCourses"
->   get backups() {
->     return this.form.controls.backupCourses;
->   }
-> 
->   // Adds a new empty text input to the backup courses array
->   addBackup() {
->     this.backups.push(
->       this.fb.control("", {
->         nonNullable: true,
->         validators: Validators.required,
->       }),
->     );
->   }
-> 
->   // Removes a specific backup course row by its position in the array
->   removeBackup(index: number) {
->     this.backups.removeAt(index);
->   }
-> 
->   submit() {
->     if (this.form.valid) {
->       // getRawValue() extracts the full form data as a JSON object, preserving disabled fields.
->       const payload = this.form.getRawValue();
->       console.log("Enrollment payload:", payload);
->       this.submitted.set(true);
->     } else {
->       // markAllAsTouched() forces Angular to show validation errors on every field.
->       this.form.markAllAsTouched();
->     }
+>   handleEnroll(course: Course) {
+>     this.selectedCourse.set(course);
+>     console.log("Enrollment requested for:", course.title);
 >   }
 > }
 > ```
 
 > [!NOTE]
-> **Step 3: Build the Form Template**
+> **Step 4: Update the Template View Architecture**
 > 
-> Open `src/app/features/enrollment-form/enrollment-form.component.html`. Implement control flow logic and attach form controls:
-> 
+> Open `src/app/features/student-dashboard/student-dashboard.component.html`. Re-wire your markup elements to evaluate the state of the managed signal streams:
 > ```html
-> <h2>Course Enrollment</h2>
-> @if (submitted()) {
->   <div class="success">
->     Enrollment submitted. Check the console for the payload.
+> <h2>Course Catalog</h2>
+> 
+> @if (coursesResource.isLoading()) {
+>   <div class="spinner">Fetching courses from the server...</div>
+> } @else if (coursesResource.error()) {
+>   <div class="error">
+>     Could not load courses. Make sure your .NET API is running.
 >   </div>
 > } @else {
->   <!-- [formGroup]="form" connects this <form> tag to the TypeScript form object you built above. -->
->   <form [formGroup]="form" (ngSubmit)="submit()">
->     <label for="studentId">Student ID</label>
->     <input
->       id="studentId"
->       formControlName="studentId"
->       placeholder="e.g. STU-1234"
->     />
->     <!-- Show the error ONLY when the user has clicked into and out of the field (.touched) AND it is invalid -->
->     @if (form.controls.studentId.touched && form.controls.studentId.invalid) {
->       <span class="error">Enter a valid Student ID (format: STU-0000)</span>
+>   <div class="grid">
+>     @for (course of coursesResource.value()!; track course.id) {
+>       <tms-course-card [course]="course" (enrollClicked)="handleEnroll(\$event)" />
+>     } @empty {
+>       <p>No courses are available this term.</p>
 >     }
-> 
->     <label for="courseId">Course ID</label>
->     <input
->       id="courseId"
->       formControlName="courseId"
->       placeholder="e.g. 1 (TMS course primary key)"
->     />
->     @if (form.controls.courseId.touched && form.controls.courseId.invalid){
->       <span class="error">Course ID is required</span>
->     }
-> 
->     <label for="term">Term</label>
->     <input id="term" formControlName="term" />
-> 
->     <label for="notes">Notes (optional)</label>
->     <textarea id="notes" formControlName="notes"></textarea>
-> 
->     <h3>Backup Courses</h3>
->     <!-- \$index is a built-in variable inside @for loops indicating the current position (0, 1, 2...) -->
->     @for (backup of backups.controls; track \$index) {
->       <div class="backup-row">
->         <!-- [formControl] binds directly to the control object in the array. -->
->         <input
->           [formControl]="backup"
->           [placeholder]="'Backup course ' + (\$index + 1)"
->         />
->         <!-- type="button" prevents this from submitting the form. -->
->         <button type="button" (click)="removeBackup(\$index)">Remove</button>
->       </div>
->     }
->     <button type="button" (click)="addBackup()">Add Backup Course</button>
->     <hr />
->     
->     <!-- Disables the button when ANY field fails validation. -->
->     <button type="submit" [disabled]="form.invalid">Confirm Enrollment</button>
-> </form>
+>   </div>
 > }
+> ```
+> *Note: The non-null assertion operator (`!`) inside `coursesResource.value()!` tells the compiler the value is safe to evaluate here. This is guaranteed since the `@else` execution branch runs only after both loading and error flags evaluate to false.*
+
+> [!NOTE]
+> **Step 5: Configure Backend Cross-Origin Resource Sharing (CORS)**
+> 
+> Because the client browser blocks cross-origin traffic between separate local host ports (`4200` to `5001`), you must register a security exception inside your .NET `Program.cs` before your HTTP requests can succeed:
+> ```csharp
+> builder.Services.AddCors(options =>
+> {
+>     options.AddPolicy("AllowAngular", policy =>
+>         policy.WithOrigins("http://localhost:4200")
+>               .AllowAnyHeader()
+>               .AllowAnyMethod());
+> });
+> 
+> // Enable right before mapping endpoint or controller behaviors
+> app.UseCors("AllowAngular");
 > ```
 
 > [!NOTE]
-> **Step 4: Route to the Form**
+> **Step 6: Live Browser Verification Loop**
 > 
-> Open `src/app/app.routes.ts`. Append the enrollment path to your routes configuration array:
-> ```typescript
-> {
->   path: 'enroll',
->   loadComponent: () => import('./features/enrollment-form/enrollment-form.component')
->     .then(m => m.EnrollmentFormComponent)
-> }
-> ```
-> *Note: Open the form at `http://localhost:4200/enroll`. You can also add a `routerLink="/enroll"` onto the dashboard page layout to make it easy to find.*
+> Open `http://localhost:4200/dashboard` in your browser. Open Developer Tools (`F12`) and navigate straight to the **Network** telemetry dashboard tab to trace outbound requests.
+> 
+> *Expected Verification State:* You should see a successful `GET` request routed directly to the endpoint URL declared in your `CourseService` (e.g., `https://localhost:5001/api/courses?page=1&pageSize=50`). The server must respond with a `200 OK` status and return a wrapped envelope instead of a root-level array. Your UI components parse the incoming data rows dynamically to render active course card containers populated with live data.
 
-#### Troubleshooting & Common Edge Cases
-* **Validation messages do not appear:** You are likely checking `.invalid` without checking `.touched`. Angular intentionally skips highlighting pristine (unclicked) fields as errors. Call `.markAllAsTouched()` on form submission.
-* **`formGroup` directive not recognized:** Ensure you have added `ReactiveFormsModule` directly into the component class's standalone `imports` array.
-* **Template errors when mixing form styles:** Attempting to use two-way syntax `[(ngModel)]` alongside `[formGroup]` triggers explicit framework exceptions. Commit to a single strategy; for this structure, use only Reactive Forms directives (`formControlName`, `[formControl]`).
+#### Checkpoint 6 Verification Checklist
+* [ ] The Network tab logs a successful `200 OK` HTTP request pointing to your .NET Web API
+* [ ] Course cards render dynamically with real data (confirming your hardcoded mock array is disconnected)
+* [ ] The loading spinner component appears briefly on screen before your data structures finish rendering
+* [ ] Terminating your .NET API process and refreshing the browser causes the fallback error message block to render instead
 
----
-
-#### Checkpoint 5 Verification Checklist
-* [ ] The form renders with Student ID, Course ID, Term, and Notes fields
-* [ ] Clicking “Add Backup Course” adds a new dynamic input row
-* [ ] Clicking “Remove” drops that specific row from the layout array
-* [ ] Submitting with an empty or mistyped Student ID triggers the verification error text block
-* [ ] A valid submission packages data and logs the JSON payload to the browser console
