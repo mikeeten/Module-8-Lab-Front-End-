@@ -13,6 +13,12 @@ export const routes: Routes = [
       import('./features/enrollment-list/enrollment-list.component')
         .then(m => m.EnrollmentListComponent)
   },
-  { path: '', redirectTo: 'dashboard', pathMatch: 'full' }
+  { path: '', redirectTo: 'dashboard', pathMatch: 'full' },
+  {
+    path: 'grade-submission',
+    loadComponent: () =>
+      import('./features/grade-submission/grade-submission.component')
+        .then(m => m.GradeSubmissionComponent)
+  }  
 ];
 
