@@ -1,143 +1,227 @@
-### Exercise 3: Enterprise Data Grid with Angular Material
+### Exercise 4: The Rage-Click Defender (exhaustMap)
 
-**Context:** Basic loops using `@for` are effective for simple card arrangements but fall short when handling large enterprise datasets. For robust data management, applications require advanced column sorting, row pagination, and comprehensive ARIA accessibility features. Angular Material's `MatTable` package delivers these capabilities out of the box, utilizing a `MatTableDataSource` broker to wrap core arrays and feed layout properties straight to Material directives.
+**Context:** Managing asynchronous event traffic requires careful control over concurrent HTTP requests. When a user interacts with a network action iteratively, selecting the wrong asynchronous flattening operator can cause server data corruption or duplicated transaction side effects.
+
+#### The Three Flattening Operators — When Each One Matters
+Before writing code, understand how the three primary RxJS flattening operators handle the scenario where a new user event arrives while a previous HTTP request is still actively in flight:
+
+| Operator | What It Does with the Old Request | Best Production Use Case |
+| :--- | :--- | :--- |
+| **`switchMap`** | Cancels the old request instantly, starts the new one. | **Search Typeaheads:** Cancels the slow, outdated `Smi` search string query the moment the user types `Smith`. |
+| **`exhaustMap`** | Ignores the new emission completely until the old one finishes. | **Submit Action Buttons:** Safely drops rapid rage-clicks while the primary creation POST request is still pending. |
+| **`concatMap`** | Queues the new request to execute after the old one finishes. | **Sequential Data Syncs:** Processes ledger adjustments or stream updates in strict, sequential queue order. |
+
+For Dawit’s grade submission form, the correct architectural choice is **`exhaustMap`**. While the first `POST` network transaction is in flight, any subsequent form submissions are dropped. This guarantees the grade is saved exactly once. 
+
+*Security Warning:* Using `switchMap` here is a dangerous anti-pattern. It cancels the in-flight request on the client browser frame, but the backend server may have already processed and committed the data write before the cancellation signal arrives across the network socket—resulting in a saved record with zero client confirmation.
 
 > [!NOTE]
-> **Step 1: Refactor the Enrollment List Component**
+> **Step 1: Generate the Component and Service Layer**
 > 
-> Refactor your existing `EnrollmentListComponent` to replace the generic card layout with a structured Material grid. 
+> Open a terminal inside your Angular workspace and execute the schema generators:
+> ```bash
+> ng generate service services/grade --type=service
+> ng generate component features/grade-submission --type=component
+> ```
+
+> [!NOTE]
+> **Step 2: Implement the Grade Service**
 > 
-> Open `src/app/features/enrollment-list/enrollment-list.component.ts` and replace its entire content:
+> Open `src/app/services/grade.service.ts` and implement the HTTP client interface using Angular 22’s `@Service()` decorator:
 > ```typescript
-> import { Component, viewChild, effect, inject } from '@angular/core';
-> import { MatTableModule, MatTableDataSource } from '@angular/material/table';
-> import { MatPaginatorModule, MatPaginator } from '@angular/material/paginator';
-> import { MatSortModule, MatSort } from '@angular/material/sort';
-> import { EnrollmentStore } from '../../store/enrollment.store';
-> import { Enrollment } from '../../models/enrollment.model';
+> import { Service, inject } from "@angular/core";
+> import { HttpClient } from "@angular/common/http";
+> import { Observable } from "rxjs";
 > 
-> @Component({
->   selector: 'tms-enrollment-list',
->   standalone: true,
->   imports: [MatTableModule, MatPaginatorModule, MatSortModule],
->   templateUrl: './enrollment-list.component.html',
->   styleUrl: './enrollment-list.component.scss'
-> })
-> export class EnrollmentListComponent {
->   store = inject(EnrollmentStore);
->   displayedColumns = ['studentName', 'courseName', 'status', 'actions'];
->   
->   // MatTableDataSource bridges our store data into Material's rendering pipeline
->   dataSource = new MatTableDataSource<Enrollment>();
+> public interface GradePayload {
+>   studentId: number;
+>   courseId: number;
+>   score: number;
+> }
 > 
->   // viewChild.required() is Angular's signal-based replacement for the legacy @ViewChild decorator.
->   // These return responsive signals that update automatically as soon as the DOM queries resolve,
->   // eliminating the need for the ngAfterViewInit lifecycle hook.
->   readonly paginator = viewChild.required(MatPaginator);
->   readonly sort = viewChild.required(MatSort);
+> @Service()
+> export class GradeService {
+>   private http = inject(HttpClient);
 > 
->   constructor() {
->     // Effect 1: Push store entities into the Material data source whenever they change.
->     // Fires automatically on mutations (approve, load, rollback) to re-render the view layer.
->     effect(() => {
->       this.dataSource.data = this.store.entities();
->     });
-> 
->     // Effect 2: Wire paginator and sort controls once Angular resolves the view queries.
->     // Automatically handles execution as soon as the signals emit the bound template elements.
->     effect(() => {
->       this.dataSource.paginator = this.paginator();
->       this.dataSource.sort = this.sort();
->     });
-> 
->     // Load enrollments on component creation with zero lifecycle hook dependencies
->     this.store.loadEnrollments();
+>   postGrade(payload: GradePayload): Observable<{ id: string; success: boolean }> {
+>     return this.http.post<{ id: string; success: boolean }>('/api/grades', payload);
 >   }
 > }
 > ```
 
 > [!NOTE]
-> **Step 2: Build the Grid Template**
+> **Step 3: Implement the Guarded Component Class (Reactive Form)**
 > 
-> Open `src/app/features/enrollment-list/enrollment-list.component.html` and replace its entire layout markup code:
-> ```html
-> <h2>Enrollment Records</h2>
+> Open `src/app/features/grade-submission/grade-submission.component.ts`. Import `ReactiveFormsModule`, `FormBuilder`, and `Validators` alongside Angular Material components. Construct an explicit `gradeForm` group and set up the `Subject`-based event stream protected by `exhaustMap`:
+> ```typescript
+> import { Component, inject } from '@angular/core';
+> import { FormBuilder, Validators, ReactiveFormsModule } from '@angular/forms';
+> import { Subject } from 'rxjs';
+> import { exhaustMap } from 'rxjs/operators';
+> import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+> import { MatCardModule } from '@angular/material/card';
+> import { MatFormFieldModule } from '@angular/material/form-field';
+> import { MatInputModule } from '@angular/material/input';
+> import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+> import { MatButtonModule } from '@angular/material/button';
+> import { GradeService, GradePayload } from '../../services/grade.service';
 > 
-> @if (store.isLoading()) {
->   <p>Loading enrollments...</p>
+> @Component({
+>   selector: 'tms-grade-submission',
+>   standalone: true,
+>   imports: [
+>     ReactiveFormsModule,
+>     MatCardModule,
+>     MatFormFieldModule,
+>     MatInputModule,
+>     MatProgressSpinnerModule,
+>     MatButtonModule
+>   ],
+>   templateUrl: './grade-submission.component.html'
+> })
+> export class GradeSubmissionComponent {
+>   private api = inject(GradeService);
+>   private fb = inject(FormBuilder);
+> 
+>   // Reactive Form definition with initial model values and validators
+>   gradeForm = this.fb.group({
+>     studentId: [101, [Validators.required, Validators.min(1)]],
+>     courseId: [302, [Validators.required, Validators.min(1)]],
+>     score: [88, [Validators.required, Validators.min(0), Validators.max(100)]]
+>   });
+> 
+>   isSubmitting = false;
+>   submissionStatus = '';
+> 
+>   // A Subject is a manual event stream — template clicks push payloads into it
+>   private submitClick$ = new Subject<GradePayload>();
+> 
+>   constructor() {
+>     this.submitClick$
+>       .pipe(
+>         // exhaustMap: while the inner HTTP observable is active,
+>         // ALL new emissions from submitClick$ are silently dropped.
+>         // Dawit can click 50 times — only ONE POST request fires.
+>         exhaustMap(payload => {
+>           this.isSubmitting = true;
+>           this.submissionStatus = 'Submitting grade to server...';
+>           return this.api.postGrade(payload);
+>         }),
+>         // takeUntilDestroyed: automatically unsubscribes when Angular
+>         // destroys this component, preventing memory leaks.
+>         // Placed inside constructor to inherit the active injection context.
+>         takeUntilDestroyed()
+>       )
+>       .subscribe({
+>         next: result => {
+>           this.isSubmitting = false;
+>           this.submissionStatus = `Grade saved successfully! Record ID: ${result.id}`;
+>         },
+>         error: err => {
+>           this.isSubmitting = false;
+>           this.submissionStatus = `Submission failed: ${err.message || 'Server error'}`;
+>         }
+>       });
+>   }
+> 
+>   // The template form submit handler pushes valid values into the protected stream
+>   onSubmit() {
+>     if (this.gradeForm.valid) {
+>       const rawValue = this.gradeForm.getRawValue();
+>       this.submitClick$.next({
+>         studentId: Number(rawValue.studentId),
+>         courseId: Number(rawValue.courseId),
+>         score: Number(rawValue.score)
+>       });
+>     }
+>   }
 > }
-> 
-> @if (store.error()) {
->   <p class="error">{{ store.error() }}</p>
-> }
-> 
-> <table mat-table [dataSource]="dataSource" matSort class="mat-elevation-z8">
->   <!-- Student Name Column -->
->   <ng-container matColumnDef="studentName">
->     <th mat-header-cell *matHeaderCellDef mat-sort-header>Student</th>
->     <td mat-cell *matCellDef="let row">{{ row.studentName }}</td>
->   </ng-container>
-> 
->   <!-- Course Name Column -->
->   <ng-container matColumnDef="courseName">
->     <th mat-header-cell *matHeaderCellDef mat-sort-header>Course</th>
->     <td mat-cell *matCellDef="let row">{{ row.courseName }}</td>
->   </ng-container>
-> 
->   <!-- Status Column -->
->   <ng-container matColumnDef="status">
->     <th mat-header-cell *matHeaderCellDef mat-sort-header>Status</th>
->     <td mat-cell *matCellDef="let row">
->       <span class="status-badge" [class]="row.status.toLowerCase()">{{ row.status }}</span>
->     </td>
->   </ng-container>
-> 
->   <!-- Actions Column -->
->   <ng-container matColumnDef="actions">
->     <th mat-header-cell *matHeaderCellDef>Actions</th>
->     <td mat-cell *matCellDef="let row">
->       @if (row.status === 'Pending') {
->         <button (click)="store.approveEnrollment(row.id)">Approve</button>
->       }
->     </td>
->   </ng-container>
-> 
->   <!-- Row definitions -->
->   <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
->   <tr mat-row *matRowDef="let row; columns: displayedColumns;"></tr>
-> </table>
-> 
-> <mat-paginator [pageSizeOptions]="[10, 25, 50]" showFirstLastButtons></mat-paginator>
 > ```
-> *Why structural cell definitions match templates:* The grid system continues to leverage asterisks syntax (`*matHeaderCellDef`, `*matCellDef`) instead of modern `@for` blocks because the data table architecture is fundamentally template-driven. Each column container acts as a repeatable structural blueprint that the grid framework instantiates contextually per row to manage accessibility, row generation, and internal virtual sorting vectors.
 
 > [!NOTE]
-> **Step 3: Register the Enrollment Index Route**
+> **Step 4: Build the Grade Submission Template (Reactive Form + Material + Tailwind)**
 > 
-> Open `src/app/app.routes.ts` and ensure your collection routing matches your feature navigation tables:
-> ```typescript
-> import { Routes } from '@angular/router';
+> Open `src/app/features/grade-submission/grade-submission.component.html` and bind the `[formGroup]="gradeForm"` with `formControlName` bindings, validation error messages (`<mat-error>`), and button disability states:
+> ```html
+> <div class="max-w-md mx-auto my-8">
+>   <mat-card class="shadow-xl rounded-2xl bg-slate-900 border border-slate-800 text-slate-100 p-6">
+>     <mat-card-header class="mb-4">
+>       <mat-card-title class="text-xl font-bold text-slate-100">Grade Submission Form</mat-card-title>
+>       <mat-card-subtitle class="text-slate-400 text-sm">Instructor Midterm Grading</mat-card-subtitle>
+>     </mat-card-header>
+>     
+>     <form [formGroup]="gradeForm" (ngSubmit)="onSubmit()">
+>       <mat-card-content class="space-y-4">
+>         <mat-form-field appearance="outline" class="w-full">
+>           <mat-label>Student ID</mat-label>
+>           <input matInput type="number" formControlName="studentId" />
+>           @if (gradeForm.controls.studentId.hasError('required')) {
+>             <mat-error>Student ID is required</mat-error>
+>           }
+>         </mat-form-field>
 > 
-> export const routes: Routes = [
->   {
->     path: 'dashboard',
->     loadComponent: () =>
->       import('./features/instructor-dashboard/instructor-dashboard.component')
->         .then(m => m.InstructorDashboardComponent)
->   },
->   {
->     path: 'enrollments',
->     loadComponent: () =>
->       import('./features/enrollment-list/enrollment-list.component')
->         .then(m => m.EnrollmentListComponent)
->   },
->   { path: '', redirectTo: 'dashboard', pathMatch: 'full' }
-> ];
+>         <mat-form-field appearance="outline" class="w-full">
+>           <mat-label>Course ID</mat-label>
+>           <input matInput type="number" formControlName="courseId" />
+>           @if (gradeForm.controls.courseId.hasError('required')) {
+>             <mat-error>Course ID is required</mat-error>
+>           }
+>         </mat-form-field>
+> 
+>         <mat-form-field appearance="outline" class="w-full">
+>           <mat-label>Score (0-100)</mat-label>
+>           <input matInput type="number" formControlName="score" />
+>           @if (gradeForm.controls.score.hasError('min') || gradeForm.controls.score.hasError('max')) {
+>             <mat-error>Score must be between 0 and 100</mat-error>
+>           }
+>         </mat-form-field>
+> 
+>         @if (isSubmitting) {
+>           <div class="flex justify-center py-3">
+>             <mat-spinner diameter="32"></mat-spinner>
+>           </div>
+>         }
+> 
+>         @if (submissionStatus) {
+>           <div class="mt-4 p-3 rounded-lg bg-slate-800 text-sky-400 text-sm font-medium border border-slate-700">
+>             {{ submissionStatus }}
+>           </div>
+>         }
+>       </mat-card-content>
+>       
+>       <mat-card-actions class="mt-4">
+>         <button
+>           mat-raised-button
+>           color="primary"
+>           type="submit"
+>           [disabled]="gradeForm.invalid || isSubmitting"
+>           class="w-full py-3 text-base font-semibold">
+>           Submit Final Grade
+>         </button>
+>       </mat-card-actions>
+>     </form>
+>   </mat-card>
+> </div>
 > ```
 
-#### Exercise 3 Verification and Testing Checklist
-1. **Initialize the Frontend Workspace:** Spin up your client server instance (`ng serve`) and navigate your browser window to `http://localhost:4200/enrollments`.
-2. **Validate Active Data Sorting:** Click the **Student** header segment. Verify rows organize alphabetically. Toggle a second click to check inverse ordering. Repeat validation against **Course** and **Status** layout blocks.
-3. **Validate Row Pagination Controls:** Ensure that data blocks scale smoothly by changing page sizing dropdown targets between 10, 25, and 50 configurations, navigating views using the pagination forward/back arrows.
-4. **Verify Asynchronous Optimistic Actions:** Find a row item containing a "Pending" status and select **Approve**. Confirm that the element status updates immediately. If the separate instructor counter dashboard tab is open simultaneously, check that the global pending total drops immediately.
-5. **Enforce Screen Accessibility Policies:** Use your keyboard `Tab` key to shift cursor focus directly inside the data grid headers. Verify that hitting `Enter` successfully executes sorting rules, ensuring text elements announce properly on standard screen-reader clients.
+> [!NOTE]
+> **Step 5: Add Route Registration**
+> 
+> Open `src/app/app.routes.ts` and add the lazy-loaded route configuration parameter inside the routing array:
+> ```typescript
+> {
+>   path: 'grade-submission',
+>   loadComponent: () =>
+>     import('./features/grade-submission/grade-submission.component')
+>       .then(m => m.GradeSubmissionComponent)
+> }
+> ```
+
+#### Exercise 4 Verification and Testing Checklist
+Follow these verification steps in order to confirm your request-throttling defensive stream architecture:
+
+1. **Initialize the Frontend Workspace:** Start the local development server (`ng serve`) and navigate your browser window to `http://localhost:4200/grade-submission`.
+2. **Validate Form Constraints:** Try submitting invalid values (e.g., score set to `150` or an empty student ID)—observe reactive `<mat-error>` messages and the disabled Submit button.
+3. **Simulate a Slow Network Connection:** Open Chrome DevTools, head to the **Network** tab, and set the network throttling dropdown profile selector directly to **Slow 3G** (simulating slow server response times).
+4. **Trigger a Local Traffic Burst:** Click the **Submit Final Grade** button rapidly 10 times in a row.
+5. **Inspect Outbound Network Telemetry:** Review the logged trace streams inside your browser tab window. You will observe exactly **one single POST request** to `/api/grades`, while the Material spinner provides visual loading feedback. The subsequent 9 clicks are completely ignored by your `exhaustMap` pipeline because they occurred while the primary operation was still actively in flight.
