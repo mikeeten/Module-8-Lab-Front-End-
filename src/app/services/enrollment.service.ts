@@ -6,7 +6,7 @@ import { Enrollment } from '../models/enrollment.model';
 @Injectable({ providedIn: 'root' })
 export class EnrollmentService {
   private http = inject(HttpClient);
-  private baseUrl = '/api/enrollments';   // relative path for proxy
+  private baseUrl = 'http://localhost:5159/api/enrollments';   // relative path for proxy
 
   getAll(): Observable<Enrollment[]> {
     return this.http.get<Enrollment[]>(this.baseUrl);
