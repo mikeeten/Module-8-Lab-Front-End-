@@ -1,227 +1,202 @@
-### Exercise 4: The Rage-Click Defender (exhaustMap)
+### Exercise 5: Real-Time Sync with SignalR
 
-**Context:** Managing asynchronous event traffic requires careful control over concurrent HTTP requests. When a user interacts with a network action iteratively, selecting the wrong asynchronous flattening operator can cause server data corruption or duplicated transaction side effects.
+**Context:** Relying on browser polling loops via `setInterval` creates significant network overhead, delays critical layout updates, and fails to scale under hundreds of concurrent users. SignalR eliminates this constraint by maintaining a persistent WebSocket transport connection directly between client browsers and your backend server. Whenever an architecture state changes (such as an enrollment getting approved or a grade posted), the server immediately broadcasts the payload down to active clients in real time.
 
-#### The Three Flattening Operators — When Each One Matters
-Before writing code, understand how the three primary RxJS flattening operators handle the scenario where a new user event arrives while a previous HTTP request is still actively in flight:
-
-| Operator | What It Does with the Old Request | Best Production Use Case |
-| :--- | :--- | :--- |
-| **`switchMap`** | Cancels the old request instantly, starts the new one. | **Search Typeaheads:** Cancels the slow, outdated `Smi` search string query the moment the user types `Smith`. |
-| **`exhaustMap`** | Ignores the new emission completely until the old one finishes. | **Submit Action Buttons:** Safely drops rapid rage-clicks while the primary creation POST request is still pending. |
-| **`concatMap`** | Queues the new request to execute after the old one finishes. | **Sequential Data Syncs:** Processes ledger adjustments or stream updates in strict, sequential queue order. |
-
-For Dawit’s grade submission form, the correct architectural choice is **`exhaustMap`**. While the first `POST` network transaction is in flight, any subsequent form submissions are dropped. This guarantees the grade is saved exactly once. 
-
-*Security Warning:* Using `switchMap` here is a dangerous anti-pattern. It cancels the in-flight request on the client browser frame, but the backend server may have already processed and committed the data write before the cancellation signal arrives across the network socket—resulting in a saved record with zero client confirmation.
+#### Step 1: Extend the Backend Hub Client Interface
+Open your .NET core assembly file `TmsApi.Application/Hubs/ITmsHubClient.cs` and append the missing broadcast contract signature:
+```csharp
+// File: TmsApi.Application/Hubs/ITmsHubClient.cs
+public interface ITmsHubClient
+{
+    // New: broadcast enrollment status changes to all connected clients
+    Task ReceiveEnrollmentStatusUpdated(string enrollmentId, string status);
+}
+```
+*Note: Because your backend `TmsHub` extends the strongly-typed `Hub<ITmsHubClient>` interface, this method becomes immediately available across all target selection parameters with full compiler checking.*
 
 > [!NOTE]
-> **Step 1: Generate the Component and Service Layer**
+> **Step 2: Broadcast from the Enrollment Approval Endpoint**
 > 
-> Open a terminal inside your Angular workspace and execute the schema generators:
-> ```bash
-> ng generate service services/grade --type=service
-> ng generate component features/grade-submission --type=component
+> Open your .NET controller class file `TmsApi.Api/Controllers/V2/EnrollmentsController.cs`. Inject the system hub context and dispatch the live change notification immediately after a database write transaction resolves successfully:
+> 
+> ```csharp
+> // File: TmsApi.Api/Controllers/V2/EnrollmentsController.cs
+> public class EnrollmentsController(
+>     /* your existing dependencies */
+>     IHubContext<TmsHub, ITmsHubClient> hubContext) : ControllerBase
+> {
+>     [HttpPost("{id}/approve")]
+>     public async Task<IActionResult> Approve(string id, CancellationToken ct)
+>     {
+>         // Your existing approval logic ...
+>         
+>         // After the database commit succeeds, broadcast to all connected Angular clients
+>         await hubContext.Clients.All.ReceiveEnrollmentStatusUpdated(id, "Approved");
+>         return NoContent();
+>     }
+> }
 > ```
+> *Design Note: We choose `hubContext.Clients.All` here rather than narrow client groups. For enrollment changes that must alter public metrics instantly across different training centers, a global broadcast is the correct choice.*
+
+#### Step 3: Install the Client Package (Angular Client)
+Open a terminal inside your Angular project folder and install the official Microsoft SignalR package:
+```bash
+npm install @microsoft/signalr
+```
 
 > [!NOTE]
-> **Step 2: Implement the Grade Service**
+> **Step 4: Configure the Local Development Server Proxy**
 > 
-> Open `src/app/services/grade.service.ts` and implement the HTTP client interface using Angular 22’s `@Service()` decorator:
+> To prevent cross-origin resource sharing errors or broken path exceptions when executing local connections, you must map local routing intercepts straight toward your .NET Kestrel engine port.
+> 
+> Create a configuration file named `proxy.conf.json` directly inside your project root:
+> ```json
+> {
+>   "/api": {
+>     "target": "http://localhost:5000",
+>     "secure": false,
+>     "changeOrigin": true
+>   },
+>   "/hubs": {
+>     "target": "http://localhost:5000",
+>     "secure": false,
+>     "ws": true
+>   }
+> }
+> ```
+> *Note: Enforcing `"ws": true` on the hubs entry is a critical configuration step. It signals the proxy to upgrade the connection handshake to the WebSocket protocol. Without it, the handshake fails and drops down to slow long-polling cycles.*
+> 
+> Wire the proxy into your `angular.json` workspace file under the serving choices block:
+> ```json
+> "serve": {
+>   "options": {
+>     "proxyConfig": "proxy.conf.json"
+>   }
+> }
+> ```
+> *Enforcement Check:* Restart your frontend `ng serve` server process after saving this file, as proxy configurations are parsed exclusively during local environment startup loops.
+
+> [!NOTE]
+> **Step 5: Build the Live Sync Client Service**
+> 
+> Generate a message transport manager class via the Angular CLI:
+> ```bash
+> ng generate service services/live-sync
+> ```
+> 
+> Open `src/app/services/live-sync.service.ts` and set up the connection state listeners:
 > ```typescript
-> import { Service, inject } from "@angular/core";
-> import { HttpClient } from "@angular/common/http";
-> import { Observable } from "rxjs";
+> import { inject, PLATFORM_ID, signal } from "@angular/core";
+> import { isPlatformBrowser } from "@angular/common";
+> import { HubConnection, HubConnectionBuilder } from "@microsoft/signalr";
+> import { Subject } from "rxjs";
 > 
-> public interface GradePayload {
->   studentId: number;
->   courseId: number;
->   score: number;
+> public interface EnrollmentStatusEvent {
+>   id: string;
+>   status: 'Pending' | 'Approved' | 'Rejected';
 > }
 > 
 > @Service()
-> export class GradeService {
->   private http = inject(HttpClient);
+> public class LiveSyncService {
+>   private platformId = inject(PLATFORM_ID);
+>   private connection: HubConnection | null = null;
+>   private eventsSubject = new Subject<EnrollmentStatusEvent>();
 > 
->   postGrade(payload: GradePayload): Observable<{ id: string; success: boolean }> {
->     return this.http.post<{ id: string; success: boolean }>('/api/grades', payload);
+>   // Expose events as an observable stream for state store subscriptions
+>   events\$ = this.eventsSubject.asObservable();
+> 
+>   connectionState = signal<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
+> 
+>   connect() {
+>     // Guard against duplicate connection setups
+>     if (this.connection) return;
+> 
+>     // WebSockets are a browser feature. Skip execution if evaluated inside a Node.js server loop
+>     if (!isPlatformBrowser(this.platformId)) return;
+> 
+>     this.connection = new HubConnectionBuilder()
+>       .withUrl('/hubs/tms')
+>       .withAutomaticReconnect([0, 2000, 10000, 30000])
+>       .build();
+> 
+>     // The mapping string matches the exact .NET method contract declared inside ITmsHubClient
+>     this.connection.on(
+>       'ReceiveEnrollmentStatusUpdated',
+>       (enrollmentId: string, status: 'Pending' | 'Approved' | 'Rejected') => {
+>         this.eventsSubject.next({ id: enrollmentId, status });
+>       }
+>     );
+> 
+>     this.connection.onreconnecting(() => this.connectionState.set('reconnecting'));
+>     this.connection.onreconnected(() => this.connectionState.set('connected'));
+>     this.connection.onclose(() => this.connectionState.set('disconnected'));
+> 
+>     this.connection
+>       .start()
+>       .then(() => this.connectionState.set('connected'))
+>       .catch(err => console.error('SignalR connection error:', err));
 >   }
 > }
 > ```
 
 > [!NOTE]
-> **Step 3: Implement the Guarded Component Class (Reactive Form)**
+> **Step 6: Bridge Live Events into the SignalStore Engine**
 > 
-> Open `src/app/features/grade-submission/grade-submission.component.ts`. Import `ReactiveFormsModule`, `FormBuilder`, and `Validators` alongside Angular Material components. Construct an explicit `gradeForm` group and set up the `Subject`-based event stream protected by `exhaustMap`:
+> Open `src/app/store/enrollment.store.ts`. Isolate transportation from mutations by binding your outbound proxy stream directly inside the `withMethods` block:
+> 
 > ```typescript
-> import { Component, inject } from '@angular/core';
-> import { FormBuilder, Validators, ReactiveFormsModule } from '@angular/forms';
-> import { Subject } from 'rxjs';
-> import { exhaustMap } from 'rxjs/operators';
-> import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-> import { MatCardModule } from '@angular/material/card';
-> import { MatFormFieldModule } from '@angular/material/form-field';
-> import { MatInputModule } from '@angular/material/input';
-> import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
-> import { MatButtonModule } from '@angular/material/button';
-> import { GradeService, GradePayload } from '../../services/grade.service';
+> import { inject } from '@angular/core';
+> import { signalStore, withMethods, patchState } from '@ngrx/signals';
+> import { withEntities, updateEntity } from '@ngrx/signals/entities';
+> import { rxMethod } from '@ngrx/signals/rxjs-interop';
+> import { pipe, switchMap, tap } from 'rxjs';
+> import { EnrollmentService } from '../services/enrollment.service';
+> import { LiveSyncService } from '../services/live-sync.service';
+> import { Enrollment } from '../models/enrollment.model';
 > 
-> @Component({
->   selector: 'tms-grade-submission',
->   standalone: true,
->   imports: [
->     ReactiveFormsModule,
->     MatCardModule,
->     MatFormFieldModule,
->     MatInputModule,
->     MatProgressSpinnerModule,
->     MatButtonModule
->   ],
->   templateUrl: './grade-submission.component.html'
-> })
-> export class GradeSubmissionComponent {
->   private api = inject(GradeService);
->   private fb = inject(FormBuilder);
-> 
->   // Reactive Form definition with initial model values and validators
->   gradeForm = this.fb.group({
->     studentId: [101, [Validators.required, Validators.min(1)]],
->     courseId: [302, [Validators.required, Validators.min(1)]],
->     score: [88, [Validators.required, Validators.min(0), Validators.max(100)]]
->   });
-> 
->   isSubmitting = false;
->   submissionStatus = '';
-> 
->   // A Subject is a manual event stream — template clicks push payloads into it
->   private submitClick$ = new Subject<GradePayload>();
-> 
->   constructor() {
->     this.submitClick$
->       .pipe(
->         // exhaustMap: while the inner HTTP observable is active,
->         // ALL new emissions from submitClick$ are silently dropped.
->         // Dawit can click 50 times — only ONE POST request fires.
->         exhaustMap(payload => {
->           this.isSubmitting = true;
->           this.submissionStatus = 'Submitting grade to server...';
->           return this.api.postGrade(payload);
->         }),
->         // takeUntilDestroyed: automatically unsubscribes when Angular
->         // destroys this component, preventing memory leaks.
->         // Placed inside constructor to inherit the active injection context.
->         takeUntilDestroyed()
+> export const EnrollmentStore = signalStore(
+>   { providedIn: 'root' },
+>   withEntities<Enrollment>(),
+>   withMethods((store, api = inject(EnrollmentService), sync = inject(LiveSyncService)) => ({
+>     // Listens to SignalR live sync stream and updates store state automatically
+>     listenForLiveUpdates: rxMethod<void>(
+>       pipe(
+>         tap(() => sync.connect()),
+>         switchMap(() => sync.events\$),
+>         tap(event => {
+>           patchState(
+>             store,
+>             updateEntity({ id: event.id, changes: { status: event.status } })
+>           );
+>         })
 >       )
->       .subscribe({
->         next: result => {
->           this.isSubmitting = false;
->           this.submissionStatus = `Grade saved successfully! Record ID: ${result.id}`;
->         },
->         error: err => {
->           this.isSubmitting = false;
->           this.submissionStatus = `Submission failed: ${err.message || 'Server error'}`;
->         }
->       });
->   }
-> 
->   // The template form submit handler pushes valid values into the protected stream
->   onSubmit() {
->     if (this.gradeForm.valid) {
->       const rawValue = this.gradeForm.getRawValue();
->       this.submitClick$.next({
->         studentId: Number(rawValue.studentId),
->         courseId: Number(rawValue.courseId),
->         score: Number(rawValue.score)
->       });
->     }
->   }
-> }
+>     )
+>     // ... your existing loadEnrollments() and approveEnrollment() methods
+>   }))
+> );
 > ```
 
 > [!NOTE]
-> **Step 4: Build the Grade Submission Template (Reactive Form + Material + Tailwind)**
+> **Step 7: Activate the Live Sync Listener on App Startup**
 > 
-> Open `src/app/features/grade-submission/grade-submission.component.html` and bind the `[formGroup]="gradeForm"` with `formControlName` bindings, validation error messages (`<mat-error>`), and button disability states:
-> ```html
-> <div class="max-w-md mx-auto my-8">
->   <mat-card class="shadow-xl rounded-2xl bg-slate-900 border border-slate-800 text-slate-100 p-6">
->     <mat-card-header class="mb-4">
->       <mat-card-title class="text-xl font-bold text-slate-100">Grade Submission Form</mat-card-title>
->       <mat-card-subtitle class="text-slate-400 text-sm">Instructor Midterm Grading</mat-card-subtitle>
->     </mat-card-header>
->     
->     <form [formGroup]="gradeForm" (ngSubmit)="onSubmit()">
->       <mat-card-content class="space-y-4">
->         <mat-form-field appearance="outline" class="w-full">
->           <mat-label>Student ID</mat-label>
->           <input matInput type="number" formControlName="studentId" />
->           @if (gradeForm.controls.studentId.hasError('required')) {
->             <mat-error>Student ID is required</mat-error>
->           }
->         </mat-form-field>
-> 
->         <mat-form-field appearance="outline" class="w-full">
->           <mat-label>Course ID</mat-label>
->           <input matInput type="number" formControlName="courseId" />
->           @if (gradeForm.controls.courseId.hasError('required')) {
->             <mat-error>Course ID is required</mat-error>
->           }
->         </mat-form-field>
-> 
->         <mat-form-field appearance="outline" class="w-full">
->           <mat-label>Score (0-100)</mat-label>
->           <input matInput type="number" formControlName="score" />
->           @if (gradeForm.controls.score.hasError('min') || gradeForm.controls.score.hasError('max')) {
->             <mat-error>Score must be between 0 and 100</mat-error>
->           }
->         </mat-form-field>
-> 
->         @if (isSubmitting) {
->           <div class="flex justify-center py-3">
->             <mat-spinner diameter="32"></mat-spinner>
->           </div>
->         }
-> 
->         @if (submissionStatus) {
->           <div class="mt-4 p-3 rounded-lg bg-slate-800 text-sky-400 text-sm font-medium border border-slate-700">
->             {{ submissionStatus }}
->           </div>
->         }
->       </mat-card-content>
->       
->       <mat-card-actions class="mt-4">
->         <button
->           mat-raised-button
->           color="primary"
->           type="submit"
->           [disabled]="gradeForm.invalid || isSubmitting"
->           class="w-full py-3 text-base font-semibold">
->           Submit Final Grade
->         </button>
->       </mat-card-actions>
->     </form>
->   </mat-card>
-> </div>
-> ```
-
-> [!NOTE]
-> **Step 5: Add Route Registration**
-> 
-> Open `src/app/app.routes.ts` and add the lazy-loaded route configuration parameter inside the routing array:
+> Open your root entry file `src/app/app.component.ts` (or `instructor-dashboard.component.ts`) and trigger the state listener loop within your initialization hook:
 > ```typescript
-> {
->   path: 'grade-submission',
->   loadComponent: () =>
->     import('./features/grade-submission/grade-submission.component')
->       .then(m => m.GradeSubmissionComponent)
+> import { Component, OnInit, inject } from '@angular/core';
+> import { EnrollmentStore } from './store/enrollment.store';
+> 
+> export class AppComponent implements OnInit {
+>   private store = inject(EnrollmentStore);
+> 
+>   ngOnInit() {
+>     this.store.loadEnrollments();
+>     this.store.listenForLiveUpdates();
+>   }
 > }
 > ```
 
-#### Exercise 4 Verification and Testing Checklist
-Follow these verification steps in order to confirm your request-throttling defensive stream architecture:
-
-1. **Initialize the Frontend Workspace:** Start the local development server (`ng serve`) and navigate your browser window to `http://localhost:4200/grade-submission`.
-2. **Validate Form Constraints:** Try submitting invalid values (e.g., score set to `150` or an empty student ID)—observe reactive `<mat-error>` messages and the disabled Submit button.
-3. **Simulate a Slow Network Connection:** Open Chrome DevTools, head to the **Network** tab, and set the network throttling dropdown profile selector directly to **Slow 3G** (simulating slow server response times).
-4. **Trigger a Local Traffic Burst:** Click the **Submit Final Grade** button rapidly 10 times in a row.
-5. **Inspect Outbound Network Telemetry:** Review the logged trace streams inside your browser tab window. You will observe exactly **one single POST request** to `/api/grades`, while the Material spinner provides visual loading feedback. The subsequent 9 clicks are completely ignored by your `exhaustMap` pipeline because they occurred while the primary operation was still actively in flight.
+#### Exercise 5 Verification and Real-Time Sync Testing
+Follow these verification steps in order to confirm your socket-sync infrastructure:
+1. **Initialize Your Services:** Spin up your backend environment (`dotnet run --project TmsApi.Api`) alongside your client dashboard (`ng serve`).
+2. **Launch Split-Screen Views:** Open two separate browser windows side by side. Navigate Tab 1 to `http://localhost:4200/enrollments` and Tab 2 straight to `http://localhost:4200/dashboard`.
+3. **Trigger State Mutations:** In Tab 1, select a "Pending" record from your data grid and click **Approve**.
+4. **Observe Real-Time Updates:** Watch Tab 2 closely. The pending metric total shown on the dashboard drops instantly without requiring a page refresh or manual API polling loops, proving your SignalR connection context is updating the unified state store across windows.
