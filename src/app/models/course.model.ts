@@ -1,19 +1,20 @@
 export interface Course {
-id: number;
-code: string;
-title: string;
-maxCapacity: number;
-enrollmentCount: number;
+  id: number;
+  code: string;
+  title: string;
+  maxCapacity: number;
+  enrollmentCount: number;
+  status?: string;
 }
 /** Envelope for `GET /api/courses` — TMS API contract list shape (`PagedResponse<T>`). */
 export interface PagedResponse<T> {
-items: T[];
-totalCount: number;
-page: number;
-pageSize: number;
-totalPages: number;
-hasPrevious: boolean;
-hasNext: boolean;
+  items: T[];
+  totalCount: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  hasPrevious: boolean;
+  hasNext: boolean;
 }
 /** One link from `CourseDetailDto.Links` on `GET /api/courses/{id}`.*/
 export interface CourseLink {
