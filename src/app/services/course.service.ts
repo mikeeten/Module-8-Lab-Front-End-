@@ -1,24 +1,19 @@
-import { Injectable, inject } from "@angular/core";
-import { HttpClient } from "@angular/common/http";
-import { map } from "rxjs/operators";
-import { Course, PagedResponse, CourseDetailDto } from "../models/course.model";
+import { Injectable, inject } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { map } from 'rxjs/operators';
+import { environment } from '../../environments/environment';
+import { Course, PagedResponse } from '../models/course.model';
 
-@Injectable({ providedIn: 'root' })   // ✅ globally available
+@Injectable({ providedIn: 'root' })
 export class CourseService {
   private http = inject(HttpClient);
-  private baseUrl = "http://localhost:5159/api/courses";
-
-  // Get all courses with paging
-  getAll(page = 1, pageSize = 50) {
+  private readonly base = `${environment.apiUrl}/courses`;
+  
+  getAll() {
     return this.http
-      .get<PagedResponse<Course>>(this.baseUrl, {
-        params: { page: page.toString(), pageSize: pageSize.toString() },
+      .get<PagedResponse<Course>>(this.base, {
+        params: { page: '1', pageSize: '50' }
       })
-      .pipe(map((p) => p.items));
-  }
-
-  // Get course by ID
-  getById(id: string) {
-    return this.http.get<CourseDetailDto>(`${this.baseUrl}/${id}`);
+      .pipe(map(response => response.items));
   }
 }
