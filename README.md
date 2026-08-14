@@ -1,202 +1,154 @@
-### Exercise 5: Real-Time Sync with SignalR
+### Exercise 1: Breaking the CORS Lock (Policy and Environments)
 
-**Context:** Relying on browser polling loops via `setInterval` creates significant network overhead, delays critical layout updates, and fails to scale under hundreds of concurrent users. SignalR eliminates this constraint by maintaining a persistent WebSocket transport connection directly between client browsers and your backend server. Whenever an architecture state changes (such as an enrollment getting approved or a grade posted), the server immediately broadcasts the payload down to active clients in real time.
+**Context:** Security restrictions implemented inside modern web browsers block cross-origin requests between separate local host ports (`4200` and `5001`) by default. To safely bridge this boundary, you must establish an explicit Cross-Origin Resource Sharing (CORS) policy inside your .NET Core API container while restructuring your Angular service layers to pull URL configurations from environment-agnostic setup parameters.
 
-#### Step 1: Extend the Backend Hub Client Interface
-Open your .NET core assembly file `TmsApi.Application/Hubs/ITmsHubClient.cs` and append the missing broadcast contract signature:
-```csharp
-// File: TmsApi.Application/Hubs/ITmsHubClient.cs
-public interface ITmsHubClient
-{
-    // New: broadcast enrollment status changes to all connected clients
-    Task ReceiveEnrollmentStatusUpdated(string enrollmentId, string status);
-}
-```
-*Note: Because your backend `TmsHub` extends the strongly-typed `Hub<ITmsHubClient>` interface, this method becomes immediately available across all target selection parameters with full compiler checking.*
-
-> [!NOTE]
-> **Step 2: Broadcast from the Enrollment Approval Endpoint**
-> 
-> Open your .NET controller class file `TmsApi.Api/Controllers/V2/EnrollmentsController.cs`. Inject the system hub context and dispatch the live change notification immediately after a database write transaction resolves successfully:
-> 
-> ```csharp
-> // File: TmsApi.Api/Controllers/V2/EnrollmentsController.cs
-> public class EnrollmentsController(
->     /* your existing dependencies */
->     IHubContext<TmsHub, ITmsHubClient> hubContext) : ControllerBase
-> {
->     [HttpPost("{id}/approve")]
->     public async Task<IActionResult> Approve(string id, CancellationToken ct)
->     {
->         // Your existing approval logic ...
->         
->         // After the database commit succeeds, broadcast to all connected Angular clients
->         await hubContext.Clients.All.ReceiveEnrollmentStatusUpdated(id, "Approved");
->         return NoContent();
->     }
-> }
-> ```
-> *Design Note: We choose `hubContext.Clients.All` here rather than narrow client groups. For enrollment changes that must alter public metrics instantly across different training centers, a global broadcast is the correct choice.*
-
-#### Step 3: Install the Client Package (Angular Client)
-Open a terminal inside your Angular project folder and install the official Microsoft SignalR package:
-```bash
-npm install @microsoft/signalr
-```
+#### Part A: Diagnose the Lock in DevTools
+Before changing a single line of code, let’s observe the browser’s security enforcement firsthand:
+1. Open your `TmsApi` project and comment out `app.UseCors("AllowAngular");` registered during previous configuration sessions.
+2. Launch your .NET Web API project inside one terminal window:
+   ```bash
+   dotnet run
+   ```
+3. Launch your Angular application inside a second terminal window:
+   ```bash
+   ng serve
+   ```
+4. Open your browser to `http://localhost:4200` and pull up your Developer Tools (`F12`).
+5. Navigate straight to the **Network** tab and clear the active history log.
+6. Trigger an HTTP request action from Angular to your backend API.
+7. *Observation State:* Notice that the Network request appears red or fails to complete, and the Console displays the CORS blockage message. Under the hood, the server successfully processed the query and returned a response payload, but Chrome intercepted the payload structure before your TypeScript runtime code could capture it.
 
 > [!NOTE]
-> **Step 4: Configure the Local Development Server Proxy**
+> **Part B: Configure a Named CORS Policy in .NET 10**
 > 
-> To prevent cross-origin resource sharing errors or broken path exceptions when executing local connections, you must map local routing intercepts straight toward your .NET Kestrel engine port.
+> To tell Chrome that our Angular frontend is a trusted partner, we must declare a dedicated CORS policy on the .NET server. 
 > 
-> Create a configuration file named `proxy.conf.json` directly inside your project root:
-> ```json
-> {
->   "/api": {
->     "target": "http://localhost:5000",
->     "secure": false,
->     "changeOrigin": true
->   },
->   "/hubs": {
->     "target": "http://localhost:5000",
->     "secure": false,
->     "ws": true
->   }
-> }
-> ```
-> *Note: Enforcing `"ws": true` on the hubs entry is a critical configuration step. It signals the proxy to upgrade the connection handshake to the WebSocket protocol. Without it, the handshake fails and drops down to slow long-polling cycles.*
+> 1. Open `appsettings.Development.json` in your Web API project. Add the allowed origin list so we do not hardcode URLs in C# source code:
+>    ```json
+>    {
+>      "AllowedOrigins": [
+>        "http://localhost:4200"
+>      ]
+>    }
+>    ```
+> 2. Open `Program.cs` in your Web API project.
+> 3. Locate the service registration section (before `builder.Build()`) and define a named CORS policy called `"TmsClient"`:
+>    ```csharp
+>    // Load allowed origins from appsettings.Development.json
+>    var allowedOrigins = builder.Configuration.GetSection("AllowedOrigins").Get<string[]>()
+>        ?? ["http://localhost:4200"];
+>    
+>    // Register the CORS policy in the Dependency Injection container
+>    builder.Services.AddCors(options =>
+>    {
+>        options.AddPolicy("TmsClient", policy =>
+>        {
+>            policy.WithOrigins(allowedOrigins)
+>                .AllowAnyHeader()
+>                .AllowAnyMethod()
+>                .AllowCredentials() // Vital for HttpOnly auth cookies in Session 2
+>                .SetPreflightMaxAge(TimeSpan.FromMinutes(10));
+>        });
+>    });
+>    ```
+> 4. Scroll down to the HTTP request pipeline configuration section (after `builder.Build()`). Enable the policy using `app.UseCors()`:
+>    ```csharp
+>    // CRITICAL: Middleware order matters!
+>    // UseRouting -> UseCors -> UseAuthentication -> UseAuthorization
+>    app.UseCors("TmsClient");
+>    ```
 > 
-> Wire the proxy into your `angular.json` workspace file under the serving choices block:
-> ```json
-> "serve": {
->   "options": {
->     "proxyConfig": "proxy.conf.json"
->   }
-> }
-> ```
-> *Enforcement Check:* Restart your frontend `ng serve` server process after saving this file, as proxy configurations are parsed exclusively during local environment startup loops.
+> > [!CAUTION]
+> > **Critical Security Trap to Avoid:** Never combine `.AllowAnyOrigin()` with `.AllowCredentials()`. If you attempt to do so, ASP.NET Core will throw an `InvalidOperationException` at server startup. The browser specification strictly forbids wildcard origins when sending authenticated credentials like cookies or auth headers, because doing so would allow any malicious site on the web to make credentialed calls against your user’s session.
+> 
+> 5. Save `Program.cs`.
+> 6. Stop your API terminal (`Ctrl+C`) and restart it (`dotnet run`). Configuration changes in `Program.cs` require a full process restart to take effect.
 
 > [!NOTE]
-> **Step 5: Build the Live Sync Client Service**
+> **Part C: Clean Environment Configurations and Domain Models**
 > 
-> Generate a message transport manager class via the Angular CLI:
-> ```bash
-> ng generate service services/live-sync
-> ```
+> Hardcoding URLs like `http://localhost:5000` inside your services makes deploying to production painful. Let’s create Angular environment configurations to handle API base routes cleanly.
 > 
-> Open `src/app/services/live-sync.service.ts` and set up the connection state listeners:
-> ```typescript
-> import { inject, PLATFORM_ID, signal } from "@angular/core";
-> import { isPlatformBrowser } from "@angular/common";
-> import { HubConnection, HubConnectionBuilder } from "@microsoft/signalr";
-> import { Subject } from "rxjs";
-> 
-> public interface EnrollmentStatusEvent {
->   id: string;
->   status: 'Pending' | 'Approved' | 'Rejected';
-> }
-> 
-> @Service()
-> public class LiveSyncService {
->   private platformId = inject(PLATFORM_ID);
->   private connection: HubConnection | null = null;
->   private eventsSubject = new Subject<EnrollmentStatusEvent>();
-> 
->   // Expose events as an observable stream for state store subscriptions
->   events\$ = this.eventsSubject.asObservable();
-> 
->   connectionState = signal<'connected' | 'reconnecting' | 'disconnected'>('disconnected');
-> 
->   connect() {
->     // Guard against duplicate connection setups
->     if (this.connection) return;
-> 
->     // WebSockets are a browser feature. Skip execution if evaluated inside a Node.js server loop
->     if (!isPlatformBrowser(this.platformId)) return;
-> 
->     this.connection = new HubConnectionBuilder()
->       .withUrl('/hubs/tms')
->       .withAutomaticReconnect([0, 2000, 10000, 30000])
->       .build();
-> 
->     // The mapping string matches the exact .NET method contract declared inside ITmsHubClient
->     this.connection.on(
->       'ReceiveEnrollmentStatusUpdated',
->       (enrollmentId: string, status: 'Pending' | 'Approved' | 'Rejected') => {
->         this.eventsSubject.next({ id: enrollmentId, status });
->       }
->     );
-> 
->     this.connection.onreconnecting(() => this.connectionState.set('reconnecting'));
->     this.connection.onreconnected(() => this.connectionState.set('connected'));
->     this.connection.onclose(() => this.connectionState.set('disconnected'));
-> 
->     this.connection
->       .start()
->       .then(() => this.connectionState.set('connected'))
->       .catch(err => console.error('SignalR connection error:', err));
->   }
-> }
-> ```
+> 1. Angular 22 does not generate environment files by default. Run the generator in your Angular project terminal:
+>    ```bash
+>    ng generate environments
+>    ```
+>    *Note: This command creates `src/environments/environment.ts` and `src/environments/environment.development.ts`, while updating `angular.json` automatically.*
+> 2. Open `src/environments/environment.development.ts` and set your local API endpoint:
+>    ```typescript
+>    export const environment = {
+>      production: false,
+>      apiUrl: '/api/v1'
+>    };
+>    ```
+> 3. Open `src/environments/environment.ts` (used for production builds):
+>    ```typescript
+>    export const environment = {
+>      production: true,
+>      apiUrl: '/api/v1'
+>    };
+>    ```
+> 4. Verify your Course interface and `PagedResponse<T>` wrapper in `src/app/models/course.model.ts`:
+>    ```typescript
+>    public interface Course {
+>      id: number;
+>      code: string;
+>      title: string;
+>      maxCapacity: number;
+>      enrollmentCount: number;
+>      status?: string;
+>    }
+>    
+>    public interface PagedResponse<T> {
+>      items: T[];
+>      totalCount: number;
+>      page: number;
+>      pageSize: number;
+>      totalPages: number;
+>      hasPrevious: boolean;
+>      hasNext: boolean;
+>    }
+>    ```
+> 5. Update your CourseService (`src/app/services/course.service.ts`) to use the environment config and modern Angular `@Service()` injection patterns:
+>    ```typescript
+>    import { Service, inject } from '@angular/core';
+>    import { HttpClient } from '@angular/common/http';
+>    import { map } from 'rxjs/operators';
+>    import { environment } from '../../environments/environment';
+>    import { Course, PagedResponse } from '../models/course.model';
+>    
+>    @Service()
+>    public class CourseService {
+>      private http = inject(HttpClient);
+>      private readonly base = `\${environment.apiUrl}/courses`;
+>    
+>      getAll() {
+>        return this.http
+>          .get<PagedResponse<Course>>(this.base, {
+>            params: { page: '1', pageSize: '50' }
+>          })
+>          .pipe(map(response => response.items));
+>      }
+>    }
+>    ```
+#### Part D: Verify the End-to-End Environment Pipeline
 
-> [!NOTE]
-> **Step 6: Bridge Live Events into the SignalStore Engine**
-> 
-> Open `src/app/store/enrollment.store.ts`. Isolate transportation from mutations by binding your outbound proxy stream directly inside the `withMethods` block:
-> 
-> ```typescript
-> import { inject } from '@angular/core';
-> import { signalStore, withMethods, patchState } from '@ngrx/signals';
-> import { withEntities, updateEntity } from '@ngrx/signals/entities';
-> import { rxMethod } from '@ngrx/signals/rxjs-interop';
-> import { pipe, switchMap, tap } from 'rxjs';
-> import { EnrollmentService } from '../services/enrollment.service';
-> import { LiveSyncService } from '../services/live-sync.service';
-> import { Enrollment } from '../models/enrollment.model';
-> 
-> export const EnrollmentStore = signalStore(
->   { providedIn: 'root' },
->   withEntities<Enrollment>(),
->   withMethods((store, api = inject(EnrollmentService), sync = inject(LiveSyncService)) => ({
->     // Listens to SignalR live sync stream and updates store state automatically
->     listenForLiveUpdates: rxMethod<void>(
->       pipe(
->         tap(() => sync.connect()),
->         switchMap(() => sync.events\$),
->         tap(event => {
->           patchState(
->             store,
->             updateEntity({ id: event.id, changes: { status: event.status } })
->           );
->         })
->       )
->     )
->     // ... your existing loadEnrollments() and approveEnrollment() methods
->   }))
-> );
-> ```
+Follow these execution steps in order to confirm your environment-aware CORS configurations and service layer mappings are running correctly:
 
-> [!NOTE]
-> **Step 7: Activate the Live Sync Listener on App Startup**
-> 
-> Open your root entry file `src/app/app.component.ts` (or `instructor-dashboard.component.ts`) and trigger the state listener loop within your initialization hook:
-> ```typescript
-> import { Component, OnInit, inject } from '@angular/core';
-> import { EnrollmentStore } from './store/enrollment.store';
-> 
-> export class AppComponent implements OnInit {
->   private store = inject(EnrollmentStore);
-> 
->   ngOnInit() {
->     this.store.loadEnrollments();
->     this.store.listenForLiveUpdates();
->   }
-> }
-> ```
-
-#### Exercise 5 Verification and Real-Time Sync Testing
-Follow these verification steps in order to confirm your socket-sync infrastructure:
-1. **Initialize Your Services:** Spin up your backend environment (`dotnet run --project TmsApi.Api`) alongside your client dashboard (`ng serve`).
-2. **Launch Split-Screen Views:** Open two separate browser windows side by side. Navigate Tab 1 to `http://localhost:4200/enrollments` and Tab 2 straight to `http://localhost:4200/dashboard`.
-3. **Trigger State Mutations:** In Tab 1, select a "Pending" record from your data grid and click **Approve**.
-4. **Observe Real-Time Updates:** Watch Tab 2 closely. The pending metric total shown on the dashboard drops instantly without requiring a page refresh or manual API polling loops, proving your SignalR connection context is updating the unified state store across windows.
+1. **Relaunch the Services:** Ensure your terminal environments are clear, then restart both server instances to pick up your latest configuration and proxy changes:
+   ```bash
+   # Terminal 1 — .NET Web API
+   dotnet run
+   
+   # Terminal 2 — Angular Frontend Client
+   ng serve
+   ```
+2. **Execute Browser-Level Inspection:** Open `http://localhost:4200` inside your browser and hit `F12` to enter the Developer Tools dashboard.
+3. **Trace the Network Headers:** Trigger a manual refresh on the dashboard layout and select the outbound `/api/v1/courses` call inside your **Network** history log:
+   * Look for the **Response Headers** section. 
+   * Verify that the following security parameters populate your headers exactly:
+     ```text
+     Access-Control-Allow-Origin: http://localhost:4200
+     Access-Control-Allow-Credentials: true
+     ```
+4. **Confirm Application Data Hydration:** Ensure that your course list table renders with live backend rows—confirming that Chrome is no longer dropping response frames and your environmental endpoints are mapping cleanly.
