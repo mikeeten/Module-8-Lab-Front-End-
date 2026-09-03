@@ -1,0 +1,7 @@
+<h2>Admin Course List</h2>
+
+@if (auth.hasRole('Admin')) {
+  <button (click)="deleteCourse(course.id)" class="btn-danger">
+    Delete Course
+  </button>
+}
